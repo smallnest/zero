@@ -16,6 +16,7 @@ import (
 	"github.com/Gitlawb/zero/internal/sessions"
 	"github.com/Gitlawb/zero/internal/tools"
 	"github.com/Gitlawb/zero/internal/tui"
+	"github.com/Gitlawb/zero/internal/update"
 	"github.com/Gitlawb/zero/internal/verify"
 	"github.com/Gitlawb/zero/internal/worktrees"
 	"github.com/Gitlawb/zero/internal/zeroruntime"
@@ -38,6 +39,7 @@ type appDeps struct {
 	detectVerifyPlan func(string) (verify.Plan, error)
 	runVerify        func(context.Context, verify.Plan, verify.RunOptions) verify.Report
 	runTUI           func(context.Context, tui.Options) int
+	checkUpdate      func(context.Context, update.Options) (update.Result, error)
 	now              func() time.Time
 }
 
@@ -94,6 +96,7 @@ func defaultAppDeps() appDeps {
 		detectVerifyPlan: verify.DetectPlan,
 		runVerify:        verify.Run,
 		runTUI:           tui.Run,
+		checkUpdate:      update.Check,
 		now:              time.Now,
 	}
 }
@@ -146,6 +149,8 @@ func runWithDeps(args []string, stdout io.Writer, stderr io.Writer, deps appDeps
 		return runHooks(args[1:], stdout, stderr, deps)
 	case "mcp":
 		return runMCP(args[1:], stdout, stderr, deps)
+	case "update":
+		return runUpdate(args[1:], stdout, stderr, deps)
 	case "worktrees", "worktree":
 		return runWorktrees(args[1:], stdout, stderr, deps)
 	case "verify":
@@ -206,6 +211,9 @@ func fillAppDeps(deps appDeps) appDeps {
 	}
 	if deps.runTUI == nil {
 		deps.runTUI = defaults.runTUI
+	}
+	if deps.checkUpdate == nil {
+		deps.checkUpdate = defaults.checkUpdate
 	}
 	if deps.now == nil {
 		deps.now = defaults.now
@@ -285,6 +293,10 @@ func writeAppError(stderr io.Writer, message string, exitCode int) int {
 	return exitCode
 }
 
+func writeUsageError(stderr io.Writer, message string) int {
+	return writeExecUsageError(stderr, message)
+}
+
 func writeHelp(w io.Writer) error {
 	_, err := fmt.Fprint(w, `ZERO terminal coding agent
 
@@ -303,6 +315,7 @@ Commands:
   plugins    Inspect local Zero plugin manifests
   hooks      Inspect Zero hook configuration
   mcp        Manage MCP backend settings
+  update     Check for Zero CLI updates
   worktrees  Prepare isolated git worktrees
   verify     Detect and run local verification checks
   serve      Run Zero protocol servers
@@ -338,6 +351,8 @@ Flags:
       --enabled-tools <tools>        Only expose these comma or space separated tools
       --disabled-tools <tools>       Hide these comma or space separated tools
       --list-tools                   List model-visible tools and exit
+      --profile <profile>            Accept legacy model profile selection
+  -r, --reasoning-effort <effort>    Accept legacy reasoning effort selection
   -C, --cwd <path>                   Set the workspace directory
   -w, --worktree [name]              Run from an isolated git worktree
       --worktree-dir <path>          Base directory for created worktrees

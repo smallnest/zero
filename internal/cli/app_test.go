@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/Gitlawb/zero/internal/config"
 	"github.com/Gitlawb/zero/internal/tools"
 	"github.com/Gitlawb/zero/internal/tui"
+	"github.com/Gitlawb/zero/internal/update"
 	"github.com/Gitlawb/zero/internal/zeroruntime"
 )
 
@@ -216,6 +218,7 @@ func TestRunCommandsDoNotLaunchTUI(t *testing.T) {
 		{"plugin"},
 		{"hooks"},
 		{"mcp"},
+		{"update"},
 		{"worktrees"},
 		{"worktree"},
 		{"verify"},
@@ -237,6 +240,141 @@ func TestRunCommandsDoNotLaunchTUI(t *testing.T) {
 				t.Fatalf("TUI launcher should not be called for args %#v", args)
 			}
 		})
+	}
+}
+
+func TestRunUpdateCheckTextAndJSON(t *testing.T) {
+	result := update.Result{
+		CurrentVersion:  "dev",
+		LatestVersion:   "0.2.0",
+		ReleaseURL:      "https://github.com/Gitlawb/zero/releases/tag/v0.2.0",
+		TagName:         "v0.2.0",
+		UpdateAvailable: true,
+	}
+	deps := appDeps{
+		checkUpdate: func(ctx context.Context, options update.Options) (update.Result, error) {
+			result.CurrentVersion = options.CurrentVersion
+			return result, nil
+		},
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runWithDeps([]string{"update", "--check"}, &stdout, &stderr, deps)
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Update available: dev -> 0.2.0") {
+		t.Fatalf("unexpected update text: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = runWithDeps([]string{"update", "--check", "--json"}, &stdout, &stderr, deps)
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr.String())
+	}
+	var payload struct {
+		CurrentVersion  string `json:"currentVersion"`
+		LatestVersion   string `json:"latestVersion"`
+		ReleaseURL      string `json:"releaseUrl"`
+		TagName         string `json:"tagName"`
+		UpdateAvailable bool   `json:"updateAvailable"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("update JSON did not decode: %v\n%s", err, stdout.String())
+	}
+	if payload.CurrentVersion != "dev" ||
+		payload.LatestVersion != result.LatestVersion ||
+		payload.ReleaseURL != result.ReleaseURL ||
+		payload.TagName != result.TagName ||
+		payload.UpdateAvailable != result.UpdateAvailable {
+		t.Fatalf("unexpected update JSON: %#v", payload)
+	}
+}
+
+func TestRunUpdateRequiresCheckFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runWithDeps([]string{"update"}, &stdout, &stderr, appDeps{})
+
+	if exitCode == exitSuccess {
+		t.Fatalf("expected non-success exit code, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "--check") {
+		t.Fatalf("expected --check usage error, got %q", got)
+	}
+}
+
+func TestRunUpdateReportsCheckError(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runWithDeps([]string{"update", "--check"}, &stdout, &stderr, appDeps{
+		checkUpdate: func(context.Context, update.Options) (update.Result, error) {
+			return update.Result{}, errors.New("network failure")
+		},
+	})
+
+	if exitCode == exitSuccess {
+		t.Fatalf("expected non-success exit code, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "network failure") {
+		t.Fatalf("expected update error, got %q", got)
+	}
+}
+
+func TestRunUpdateHelpDocumentsCheckFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runWithDeps([]string{"update", "--help"}, &stdout, &stderr, appDeps{})
+
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "--check") {
+		t.Fatalf("expected update help to document --check, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunUpdateReportsUpToDate(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runWithDeps([]string{"update", "--check"}, &stdout, &stderr, appDeps{
+		checkUpdate: func(context.Context, update.Options) (update.Result, error) {
+			return update.Result{
+				CurrentVersion:  "dev",
+				LatestVersion:   "dev",
+				ReleaseURL:      "https://github.com/Gitlawb/zero/releases/tag/dev",
+				TagName:         "dev",
+				UpdateAvailable: false,
+			}, nil
+		},
+	})
+
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "up to date") {
+		t.Fatalf("expected up-to-date output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
 }
 
@@ -266,6 +404,7 @@ func assertHelpOutput(t *testing.T, args []string) {
 		"plugins",
 		"hooks",
 		"mcp",
+		"update",
 		"worktrees",
 		"verify",
 		"serve",

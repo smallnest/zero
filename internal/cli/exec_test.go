@@ -36,6 +36,8 @@ func TestRunExecHelpDocumentsM1Flags(t *testing.T) {
 				"-f, --file",
 				"-m, --model",
 				"--max-turns",
+				"--profile <profile>",
+				"-r, --reasoning-effort <effort>",
 				"-C, --cwd",
 				"-o, --output-format text|json",
 				"--prompt",
@@ -118,6 +120,27 @@ func TestRunExecMaxTurnsReachesConfigOverrides(t *testing.T) {
 	}
 	if gotMaxTurns != 7 {
 		t.Fatalf("overrides.MaxTurns = %d, want 7", gotMaxTurns)
+	}
+}
+
+func TestRunExecAcceptsLegacyModelProfileFlags(t *testing.T) {
+	exitCode, stdout, stderr := runExecWithEcho(t, []string{
+		"exec",
+		"--profile",
+		"fast",
+		"--reasoning-effort",
+		"low",
+		"hello",
+	})
+
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr)
+	}
+	if !strings.Contains(stdout, "hello") {
+		t.Fatalf("expected prompt output, got %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
 }
 
