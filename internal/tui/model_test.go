@@ -112,22 +112,80 @@ func TestTranscriptReducer(t *testing.T) {
 	}
 }
 
-func TestInitialRenderContainsHeaderInputAndFooter(t *testing.T) {
+func TestInitialRenderShowsPremiumStartupSplash(t *testing.T) {
 	model := newModel(context.Background(), Options{
 		Cwd:          `D:\codings\Opensource\Zero`,
-		ProviderName: "fake",
-		ModelName:    "m-test",
+		ProviderName: "openai",
+		ModelName:    "gpt-4.1",
 	})
+	model.width = 120
+	model.height = 34
 
 	view := model.View()
 	assertContains(t, view, "ZERO")
 	assertContains(t, view, `D:\codings\Opensource\Zero`)
-	assertContains(t, view, "fake/m-test")
-	assertContains(t, view, "zero >")
-	assertContains(t, view, "/help")
-	assertContains(t, view, "/clear")
-	assertContains(t, view, "/exit")
-	assertContains(t, view, "Ctrl+C")
+	assertContains(t, view, "project: zero")
+	assertContains(t, view, "READY")
+	assertContains(t, view, "openai / gpt-4.1")
+	assertContains(t, view, "terminal coding agent")
+	assertContains(t, view, "/plan")
+	assertContains(t, view, "/debug")
+	assertContains(t, view, "/tools")
+	assertContains(t, view, "/model")
+	assertContains(t, view, "/provider")
+	assertContains(t, view, "zero > Ask Zero to inspect, edit, explain, or run a command...")
+	if strings.Contains(view, "Welcome to Zero") {
+		t.Fatalf("startup splash should not show welcome transcript clutter, got %q", view)
+	}
+	if strings.Contains(view, "/clear") || strings.Contains(view, "/exit") {
+		t.Fatalf("startup splash should keep footer minimal, got %q", view)
+	}
+}
+
+func TestStartupSplashCollapsesAfterFirstPrompt(t *testing.T) {
+	m := newModel(context.Background(), Options{})
+	m.width = 96
+	m.height = 30
+	m.input.SetValue("inspect the repo")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := updated.(model)
+	next.width = m.width
+	next.height = m.height
+
+	if cmd != nil {
+		t.Fatal("expected missing provider prompt not to start an agent run")
+	}
+	view := next.View()
+	assertContains(t, view, "▍ you")
+	assertContains(t, view, "inspect the repo")
+	assertContains(t, view, "◇ zero")
+	assertContains(t, view, "No provider configured.")
+	if strings.Contains(view, "terminal coding agent") {
+		t.Fatalf("startup splash should collapse after first prompt, got %q", view)
+	}
+	// Working view shows the professional status line and live header state
+	// instead of the verbose command-footer hints.
+	assertContains(t, view, "shift+tab to cycle")
+	assertContains(t, view, "● ready")
+}
+
+func TestStartupSplashStaysVisibleOnEmptySubmit(t *testing.T) {
+	m := newModel(context.Background(), Options{})
+	m.width = 96
+	m.height = 30
+	m.input.SetValue("   ")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := updated.(model)
+	next.width = m.width
+	next.height = m.height
+
+	view := next.View()
+	assertContains(t, view, "terminal coding agent")
+	assertNotContains(t, view, "▍ you")
+	assertNotContains(t, view, "◇ zero")
+	assertNotContains(t, view, "● ready")
 }
 
 func TestCommandFooterTextUsesRegistryEntries(t *testing.T) {
@@ -630,6 +688,131 @@ func TestStaleAgentResponseAfterCancelIsIgnored(t *testing.T) {
 	}
 }
 
+func TestAgentResponsePreservesToolResultMetadata(t *testing.T) {
+	diff := strings.Join([]string{
+		"--- a/file.txt",
+		"+++ b/file.txt",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+	}, "\n")
+	m := newModel(context.Background(), Options{})
+	m.pending = true
+	m.activeRunID = 7
+
+	updated, _ := m.Update(agentResponseMsg{
+		runID: 7,
+		rows: []transcriptRow{{
+			kind:   rowToolResult,
+			text:   "tool result: apply_patch error",
+			tool:   "apply_patch",
+			status: tools.StatusError,
+			detail: diff,
+		}},
+	})
+	next := updated.(model)
+
+	row, ok := findTranscriptRow(next.transcript, rowToolResult)
+	if !ok {
+		t.Fatalf("expected tool result row, got %#v", next.transcript)
+	}
+	if row.tool != "apply_patch" || row.status != tools.StatusError || row.detail != diff {
+		t.Fatalf("tool result metadata was not preserved: %#v", row)
+	}
+	assertContains(t, renderRow(row, 80), "@@ -1 +1 @@")
+}
+
+func TestAgentEventRenderingMappingCoversRuntimeContract(t *testing.T) {
+	surfaces := map[zeroruntime.AgentEventType]string{
+		zeroruntime.AgentEventText:       "assistant transcript row",
+		zeroruntime.AgentEventToolCall:   "tool call transcript row",
+		zeroruntime.AgentEventToolResult: "tool result transcript row",
+		zeroruntime.AgentEventThinking:   "deferred: no transcript row until runtime emits thinking deltas",
+		zeroruntime.AgentEventUsage:      "usage tracker footer segment",
+		zeroruntime.AgentEventPlanUpdate: "system transcript row from /plan",
+		zeroruntime.AgentEventError:      "error transcript row",
+		zeroruntime.AgentEventTurnEnd:    "control boundary, no transcript row",
+	}
+	for _, eventType := range []zeroruntime.AgentEventType{
+		zeroruntime.AgentEventText,
+		zeroruntime.AgentEventToolCall,
+		zeroruntime.AgentEventToolResult,
+		zeroruntime.AgentEventThinking,
+		zeroruntime.AgentEventUsage,
+		zeroruntime.AgentEventPlanUpdate,
+		zeroruntime.AgentEventError,
+		zeroruntime.AgentEventTurnEnd,
+	} {
+		if strings.TrimSpace(surfaces[eventType]) == "" {
+			t.Fatalf("missing TUI rendering surface note for %s", eventType)
+		}
+	}
+
+	renderedRows := map[zeroruntime.AgentEventType]struct {
+		row   transcriptRow
+		wants []string
+	}{
+		zeroruntime.AgentEventText: {
+			row:   transcriptRow{kind: rowAssistant, text: "assistant text"},
+			wants: []string{"assistant text"},
+		},
+		zeroruntime.AgentEventToolCall: {
+			row: transcriptRow{
+				kind:   rowToolCall,
+				text:   "tool call: read_file",
+				tool:   "read_file",
+				detail: "README.md",
+			},
+			wants: []string{"read_file", "README.md"},
+		},
+		zeroruntime.AgentEventToolResult: {
+			row: transcriptRow{
+				kind:   rowToolResult,
+				text:   "tool result: apply_patch error",
+				tool:   "apply_patch",
+				status: tools.StatusError,
+				detail: strings.Join([]string{
+					"--- a/file.txt",
+					"+++ b/file.txt",
+					"@@ -1 +1 @@",
+					"-old",
+					"+new",
+				}, "\n"),
+			},
+			wants: []string{"apply_patch", "@@ -1 +1 @@"},
+		},
+		zeroruntime.AgentEventPlanUpdate: {
+			row:   transcriptRow{kind: rowSystem, text: "Plan updated\n- inspect: completed"},
+			wants: []string{"Plan updated", "inspect"},
+		},
+		zeroruntime.AgentEventError: {
+			row:   transcriptRow{kind: rowError, text: "provider failed"},
+			wants: []string{"provider failed"},
+		},
+	}
+	for eventType, tc := range renderedRows {
+		t.Run(string(eventType), func(t *testing.T) {
+			rendered := renderRow(tc.row, 96)
+			for _, want := range tc.wants {
+				assertContains(t, rendered, want)
+			}
+		})
+	}
+
+	m := newModel(context.Background(), Options{
+		ModelName:      "gpt-4.1",
+		PermissionMode: agent.PermissionModeAsk,
+	})
+	m.width = 96
+	m, usageRows := m.recordUsageEvent("gpt-4.1", zeroruntime.Usage{InputTokens: 100, OutputTokens: 20})
+	if len(usageRows) != 0 {
+		t.Fatalf("valid usage should update footer without transcript rows, got %#v", usageRows)
+	}
+	assertContains(t, m.usageSegment(), "100↑")
+	assertContains(t, m.usageSegment(), "20↓")
+	assertContains(t, m.statusLine(96), "approve each action")
+}
+
 func TestToolResultRowDefaultsEmptyStatusToOK(t *testing.T) {
 	text := toolResultRowText(agent.ToolResult{Name: "read_file", Output: "done"})
 
@@ -668,6 +851,14 @@ func assertContains(t *testing.T, text string, want string) {
 	}
 }
 
+func assertNotContains(t *testing.T, text string, unwanted string) {
+	t.Helper()
+
+	if strings.Contains(text, unwanted) {
+		t.Fatalf("expected %q not to contain %q", text, unwanted)
+	}
+}
+
 func transcriptContains(rows []transcriptRow, want string) bool {
 	for _, row := range rows {
 		if strings.Contains(row.text, want) {
@@ -675,6 +866,15 @@ func transcriptContains(rows []transcriptRow, want string) bool {
 		}
 	}
 	return false
+}
+
+func findTranscriptRow(rows []transcriptRow, kind rowKind) (transcriptRow, bool) {
+	for _, row := range rows {
+		if row.kind == kind {
+			return row, true
+		}
+	}
+	return transcriptRow{}, false
 }
 
 func transcriptHasMarkedModelEntry(rows []transcriptRow) bool {
