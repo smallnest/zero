@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/Gitlawb/zero/internal/agent"
 	"github.com/Gitlawb/zero/internal/config"
@@ -967,14 +968,45 @@ func TestStatusLineGroups(t *testing.T) {
 	}
 }
 
-func TestTitleBarShowsBadgeAndModel(t *testing.T) {
+func TestTitleBarShowsWorkspaceAndModel(t *testing.T) {
 	m := limeTestModel()
 	m.width = 120
+	m.cwd = "/workspace/zero"
+	m.gitBranch = "main"
 	got := plainRender(t, m.titleBar(120))
-	for _, want := range []string{" 0 ", "zero", "test-provider/test-model"} {
+	for _, want := range []string{" main", "/workspace/zero", "test-provider/test-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("title bar = %q, missing %q", got, want)
 		}
+	}
+	for _, notWant := range []string{" 0 ", "zero /"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("title bar = %q, should not include old brand cluster %q", got, notWant)
+		}
+	}
+}
+
+func TestTitleBarHighlightsBranchOverWorkspace(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+	})
+
+	m := limeTestModel()
+	m.cwd = "/workspace/zero"
+	m.gitBranch = "main"
+	got := m.titleWorkspaceSegment()
+
+	highlightedBranch := zeroTheme.muted.Render("") + " " + zeroTheme.muted.Render("main")
+	recessedWorkspace := zeroTheme.faint.Render("/workspace/zero")
+	for _, want := range []string{highlightedBranch, recessedWorkspace} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("title workspace segment = %q, missing styled segment %q", got, want)
+		}
+	}
+	if faintBranch := zeroTheme.faint.Render("") + " " + zeroTheme.faint.Render("main"); strings.Contains(got, faintBranch) {
+		t.Fatalf("title workspace segment = %q, branch should use highlighted title colour", got)
 	}
 }
 
