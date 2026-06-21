@@ -41,7 +41,7 @@ func runSetup(args []string, stdout io.Writer, stderr io.Writer, deps appDeps) i
 		return exitSuccess
 	}
 	if strings.TrimSpace(options.catalogID) == "" {
-		return runInteractiveTUIWithSetup(stderr, deps, "", nil, true)
+		return runInteractiveTUIWithSetup(stderr, deps, "", nil, "", true)
 	}
 
 	result, err := saveSetupProvider(deps, tui.SetupSelection{
@@ -110,6 +110,20 @@ type setupVerification struct {
 func verifySetupProvider(deps appDeps, profile config.ProviderProfile) (setupVerification, error) {
 	if deps.probeProviderHealth == nil {
 		return setupVerification{Ran: false, Summary: "probe unavailable; skipped"}, nil
+	}
+	// Distinguish "no key configured" from "key rejected": probing a remote provider
+	// with no credential yields a generic "the provider rejected the API key", which
+	// misleads a user who simply hasn't exported a key yet. Keyless local providers
+	// (loopback base_url) legitimately need no key, so they still probe. A profile may
+	// carry its key indirectly via APIKeyEnv (the setup result isn't env-resolved yet),
+	// so treat a populated env var as having a credential. (AUDIT-M1)
+	if !profileHasCredential(profile) && !baseURLIsLoopback(profile.BaseURL) {
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			name = "this provider"
+		}
+		return setupVerification{Ran: true, OK: false, Summary: "no api key"},
+			fmt.Errorf("no API key found for %s — set its API key (export the provider's API key env var, or pass --api-key-env) or run `zero auth`, then re-run setup", name)
 	}
 	ctx, stop := signalContext()
 	defer stop()

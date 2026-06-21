@@ -13,7 +13,7 @@
 
 **Any model. Any provider. Your rules.**
 
-![go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)
+![go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![providers](https://img.shields.io/badge/providers-25%2B-34E2EA)
 ![tests](https://img.shields.io/badge/test%20files-200%2B-43D17A)
 ![status](https://img.shields.io/badge/status-active%20development-E8B84B)
@@ -49,13 +49,14 @@ zero exec -o stream-json < turns.jsonl        # programmatic, for scripts & CI
 ## Quick start
 
 ```bash
-# run from source (requires Go 1.24+)
+# run from source (requires Go 1.25+)
 go run ./cmd/zero
-
-# or install a release binary
-scripts/install.sh                                          # Linux / macOS
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1  # Windows
 ```
+
+> **Pre-built binaries are coming soon.** Once the first GitHub release is published, you'll be able
+> to install with `scripts/install.sh` (Linux/macOS) or `scripts/install.ps1` (Windows); those
+> scripts download release assets that don't exist yet. Until then, build from source with
+> `go run ./cmd/zero` (or `go build -o zero ./cmd/zero`).
 
 First launch opens a **guided setup wizard** — pick a provider, paste a key, choose a model, done. Or do it non-interactively:
 
@@ -86,9 +87,23 @@ Type to chat, **Enter** to send. `/` opens command suggestions, **Shift+Tab** cy
 | `/permissions` `/tools` | inspect what the agent can touch |
 | `/add-dir` | grant an extra write directory for the session, or list current write roots |
 | `/theme` `/style` | make it yours |
-| `/doctor` `/usage` `/config` | health, cost, and config without leaving the chat |
+| `/doctor` `/config` | health and config without leaving the chat |
 
 Turn-completion notifications (terminal bell / OSC-9) ping you when the agent finishes or needs input — go make coffee.
+
+## Accessibility & appearance
+
+Zero ships sensible defaults and a few environment/command controls. Meaning never depends on color
+alone — diffs carry `+`/`−` signs, permission outcomes use `✓`/`✗` glyphs plus a text `PERMISSION`
+badge, and permission modes show text labels — so the UI stays readable when color is stripped.
+
+| Control | What it does |
+|---|---|
+| `NO_COLOR` (any non-empty value) | Disables color, per [no-color.org](https://no-color.org). Zero honors **any** non-empty value (`NO_COLOR=1`, `yes`, `true`, …); bold/underline still render. |
+| `ZERO_THEME=auto\|dark\|light` | Selects the palette at startup. `auto` (default) detects the terminal background. |
+| `--theme auto\|dark\|light` | Same as `ZERO_THEME`, as a launch flag (takes precedence over the env var). |
+| `/theme [auto\|dark\|light]` | Switches the palette live inside the TUI. |
+| `ZERO_NO_FADE=1` | Reduce-motion opt-out: disables the streaming-text fade animation. Fade also auto-disables over SSH/tmux and on low-color/no-TTY terminals. |
 
 ## Headless `exec`
 
