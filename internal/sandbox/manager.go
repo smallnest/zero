@@ -76,11 +76,17 @@ type SandboxExecutionRequest struct {
 }
 
 func NewSandboxManager(options SandboxManagerOptions) SandboxManager {
+	backend := options.Backend
+	if backend.Name != "" && backend.Platform == "" {
+		backend.Platform = platformForBackendName(backend.Name)
+	}
 	goos := options.GOOS
+	if goos == "" {
+		goos = backend.Platform
+	}
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	backend := options.Backend
 	if backend.Name == "" {
 		backend = selectPlatformBackend(goos, options.LookupExecutable)
 	}
@@ -89,6 +95,19 @@ func NewSandboxManager(options SandboxManagerOptions) SandboxManager {
 	}
 	backend = inferBackendCapabilities(backend)
 	return SandboxManager{goos: goos, backend: backend}
+}
+
+func platformForBackendName(name BackendName) string {
+	switch name {
+	case BackendMacOSSeatbelt:
+		return "darwin"
+	case BackendLinuxBwrap, BackendLinuxLandlock, BackendWSL:
+		return "linux"
+	case BackendWindowsRestrictedToken, BackendWindowsElevated:
+		return "windows"
+	default:
+		return ""
+	}
 }
 
 func (manager SandboxManager) Backend() Backend {
@@ -153,9 +172,6 @@ func (manager SandboxManager) BuildExecutionRequest(request SandboxManagerReques
 		enforcementLevel = EnforcementDisabled
 	}
 	if request.ValidateExecution && preference == SandboxPreferenceRequire && backend.SupportLevel() != BackendSupportNative {
-		return SandboxExecutionRequest{}, nativeSandboxUnavailableError(backend)
-	}
-	if request.ValidateExecution && requiresPlatformSandbox && backend.SupportLevel() != BackendSupportNative {
 		return SandboxExecutionRequest{}, nativeSandboxUnavailableError(backend)
 	}
 	// Windows: the OS sandbox needs a one-time elevated `zero sandbox setup` (it

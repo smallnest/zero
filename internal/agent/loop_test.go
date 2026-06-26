@@ -1560,6 +1560,129 @@ func TestRunCommandPrefixApprovalSkipsLaterMatchingBashPrompt(t *testing.T) {
 	}
 }
 
+func TestRunCommandPrefixApprovalBypassesSandboxForMatchingShellCalls(t *testing.T) {
+	root := t.TempDir()
+	retryTool := &sandboxDeniedRetryTool{}
+	registry := tools.NewRegistry()
+	registry.Register(retryTool)
+	provider := &mockProvider{
+		turns: [][]zeroruntime.StreamEvent{
+			{
+				{Type: zeroruntime.StreamEventToolCallStart, ToolCallID: "call-1", ToolName: "bash"},
+				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-1", ArgumentsFragment: `{"command":"echo prefix-ok"}`},
+				{Type: zeroruntime.StreamEventToolCallEnd, ToolCallID: "call-1"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+			{
+				{Type: zeroruntime.StreamEventToolCallStart, ToolCallID: "call-2", ToolName: "bash"},
+				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-2", ArgumentsFragment: `{"command":"echo prefix-ok again"}`},
+				{Type: zeroruntime.StreamEventToolCallEnd, ToolCallID: "call-2"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+			{
+				{Type: zeroruntime.StreamEventText, Content: "done"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+		},
+	}
+	var requests []PermissionRequest
+
+	result, err := Run(context.Background(), "run twice", provider, Options{
+		Registry:       registry,
+		PermissionMode: PermissionModeAsk,
+		Autonomy:       "medium",
+		Sandbox: sandbox.NewEngine(sandbox.EngineOptions{
+			WorkspaceRoot: root,
+			Policy:        sandbox.DefaultPolicy(),
+			Backend:       sandbox.Backend{Name: sandbox.BackendUnavailable, Message: "native sandbox unavailable"},
+		}),
+		OnPermissionRequest: func(_ context.Context, request PermissionRequest) (PermissionDecision, error) {
+			requests = append(requests, request)
+			return PermissionDecision{Action: PermissionDecisionAllowPrefix, Reason: "trust this command prefix"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FinalAnswer != "done" {
+		t.Fatalf("expected final answer, got %q", result.FinalAnswer)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected only first command to request prefix approval, got %#v", requests)
+	}
+	if len(retryTool.calls) != 2 {
+		t.Fatalf("tool calls = %#v, want two first-attempt executions", retryTool.calls)
+	}
+	for index, call := range retryTool.calls {
+		if call["sandbox_permissions"] != string(tools.SandboxPermissionsRequireEscalated) {
+			t.Fatalf("call %d args = %#v, want prefix-approved require_escalated execution", index, call)
+		}
+	}
+}
+
+func TestRunCommandPrefixApprovalCoversSegmentedShellWithSafeTail(t *testing.T) {
+	root := t.TempDir()
+	retryTool := &sandboxDeniedRetryTool{}
+	registry := tools.NewRegistry()
+	registry.Register(retryTool)
+	provider := &mockProvider{
+		turns: [][]zeroruntime.StreamEvent{
+			{
+				{Type: zeroruntime.StreamEventToolCallStart, ToolCallID: "call-1", ToolName: "bash"},
+				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-1", ArgumentsFragment: `{"command":"ps aux"}`},
+				{Type: zeroruntime.StreamEventToolCallEnd, ToolCallID: "call-1"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+			{
+				{Type: zeroruntime.StreamEventToolCallStart, ToolCallID: "call-2", ToolName: "bash"},
+				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-2", ArgumentsFragment: `{"command":"ps aux | head -5"}`},
+				{Type: zeroruntime.StreamEventToolCallEnd, ToolCallID: "call-2"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+			{
+				{Type: zeroruntime.StreamEventText, Content: "done"},
+				{Type: zeroruntime.StreamEventDone},
+			},
+		},
+	}
+	var requests []PermissionRequest
+
+	result, err := Run(context.Background(), "inspect processes", provider, Options{
+		Registry:       registry,
+		PermissionMode: PermissionModeAsk,
+		Autonomy:       "medium",
+		Sandbox: sandbox.NewEngine(sandbox.EngineOptions{
+			WorkspaceRoot: root,
+			Policy:        sandbox.DefaultPolicy(),
+			Backend:       sandbox.Backend{Name: sandbox.BackendUnavailable, Message: "native sandbox unavailable"},
+		}),
+		OnPermissionRequest: func(_ context.Context, request PermissionRequest) (PermissionDecision, error) {
+			requests = append(requests, request)
+			if !equalStringSlices(request.CommandPrefix, []string{"ps", "aux"}) {
+				t.Fatalf("request command prefix = %#v, want ps aux", request.CommandPrefix)
+			}
+			return PermissionDecision{Action: PermissionDecisionAllowPrefix, Reason: "trust this command prefix"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FinalAnswer != "done" {
+		t.Fatalf("expected final answer, got %q", result.FinalAnswer)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("expected only first command to request approval, got %#v", requests)
+	}
+	if len(retryTool.calls) != 2 {
+		t.Fatalf("tool calls = %#v, want two first-attempt executions", retryTool.calls)
+	}
+	for index, call := range retryTool.calls {
+		if call["sandbox_permissions"] != string(tools.SandboxPermissionsRequireEscalated) {
+			t.Fatalf("call %d args = %#v, want require_escalated execution", index, call)
+		}
+	}
+}
+
 func TestRunPersistentCommandPrefixApprovalSkipsFutureSessionPrompt(t *testing.T) {
 	root := t.TempDir()
 	store, err := sandbox.NewGrantStore(sandbox.StoreOptions{FilePath: filepath.Join(t.TempDir(), "sandbox-grants.json")})
@@ -1794,8 +1917,8 @@ func TestRunApprovedNetworkBashPromptAppliesTurnNetworkGrant(t *testing.T) {
 		t.Fatalf("expected tool result to be sent back to provider, got %d requests", len(provider.requests))
 	}
 	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
-	if !strings.Contains(lastMessage.Content, "native sandbox backend is unavailable") {
-		t.Fatalf("expected native sandbox unavailable error after approval, got %q", lastMessage.Content)
+	if !strings.Contains(lastMessage.Content, "fake curl https://example.com") {
+		t.Fatalf("expected approved network command output after degraded execution, got %q", lastMessage.Content)
 	}
 }
 
@@ -1807,7 +1930,7 @@ func TestRunDoesNotOfferPrefixApprovalForUnsafeBashCommand(t *testing.T) {
 		turns: [][]zeroruntime.StreamEvent{
 			{
 				{Type: zeroruntime.StreamEventToolCallStart, ToolCallID: "call-1", ToolName: "bash"},
-				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-1", ArgumentsFragment: `{"command":"echo hi && echo bye","prefix_rule":["echo"]}`},
+				{Type: zeroruntime.StreamEventToolCallDelta, ToolCallID: "call-1", ArgumentsFragment: `{"command":"echo hi && npm install","prefix_rule":["echo"]}`},
 				{Type: zeroruntime.StreamEventToolCallEnd, ToolCallID: "call-1"},
 				{Type: zeroruntime.StreamEventDone},
 			},
@@ -1903,8 +2026,8 @@ func TestRunPromptsForDestructiveShellInsteadOfSandboxDeny(t *testing.T) {
 		t.Fatalf("expected tool result to be sent back to provider, got %d requests", len(provider.requests))
 	}
 	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
-	if !strings.Contains(lastMessage.Content, "native sandbox backend is unavailable") {
-		t.Fatalf("expected native sandbox unavailable error after approval, got %q", lastMessage.Content)
+	if !strings.Contains(lastMessage.Content, "rm -rf /") {
+		t.Fatalf("expected approved shell command output after degraded execution, got %q", lastMessage.Content)
 	}
 }
 
