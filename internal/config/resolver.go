@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +14,11 @@ import (
 	"github.com/Gitlawb/zero/internal/providercatalog"
 	"github.com/Gitlawb/zero/internal/sandbox"
 )
+
+// ErrNoActiveProvider marks a resolve failure caused solely by a missing or
+// unresolvable active provider. The interactive TUI treats this as "needs
+// onboarding" (drop into the setup wizard) rather than a fatal config error.
+var ErrNoActiveProvider = errors.New("no active provider configured")
 
 // defaultMaxTurns is the per-run tool-turn budget when none is configured. 30 was
 // too low for real multi-step agentic work (agents ran out mid-task before reaching
@@ -750,7 +756,7 @@ func normalizeProvidersWithOptions(providers []ProviderProfile, activeName strin
 	}
 	if len(providers) == 0 {
 		if activeName != "" {
-			return nil, ProviderProfile{}, fmt.Errorf("active provider %q not found", activeName)
+			return nil, ProviderProfile{}, fmt.Errorf("%w: active provider %q not found", ErrNoActiveProvider, activeName)
 		}
 		return []ProviderProfile{}, ProviderProfile{}, nil
 	}
@@ -782,7 +788,7 @@ func normalizeProvidersWithOptions(providers []ProviderProfile, activeName strin
 	}
 
 	if !activeFound {
-		return nil, ProviderProfile{}, fmt.Errorf("active provider %q not found", activeName)
+		return nil, ProviderProfile{}, fmt.Errorf("%w: active provider %q not found", ErrNoActiveProvider, activeName)
 	}
 	if active.Model == "" {
 		return nil, ProviderProfile{}, providerError(active, "provider %s requires model", active.Name)

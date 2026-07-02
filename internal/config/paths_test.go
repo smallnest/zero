@@ -105,7 +105,7 @@ func setUserConfigRoot(t *testing.T) string {
 		t.Setenv("XDG_CONFIG_HOME", root)
 	}
 
-	configRoot, err := os.UserConfigDir()
+	configRoot, err := UserConfigDir()
 	if err != nil {
 		t.Fatalf("UserConfigDir() error = %v", err)
 	}
@@ -128,5 +128,23 @@ func mkdirAll(t *testing.T, path string) {
 
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatalf("create directory %s: %v", path, err)
+	}
+}
+
+func TestDefaultUserConfigPathUsesXDGConfigOnMacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific config path behavior")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	path, err := DefaultUserConfigPath()
+	if err != nil {
+		t.Fatalf("DefaultUserConfigPath() error = %v", err)
+	}
+	want := filepath.Join(home, ".config", "zero", "config.json")
+	if path != want {
+		t.Fatalf("DefaultUserConfigPath() = %q, want %q", path, want)
 	}
 }

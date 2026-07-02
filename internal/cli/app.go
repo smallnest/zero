@@ -530,7 +530,15 @@ func runInteractiveTUIWithSetup(stderr io.Writer, deps appDeps, permissionMode a
 
 	resolved, err := deps.resolveConfig(workspaceRoot, config.Overrides{})
 	if err != nil {
-		return writeAppError(stderr, err.Error(), 1)
+		// A resolve failure caused solely by a missing/unresolvable active provider
+		// is not fatal for the interactive TUI: drop into the setup wizard with an
+		// empty config so the user can onboard, instead of exiting with an error.
+		// Any other error (malformed JSON, directory conflict, etc.) is still fatal.
+		if !errors.Is(err, config.ErrNoActiveProvider) {
+			return writeAppError(stderr, err.Error(), 1)
+		}
+		resolved = config.ResolvedConfig{}
+		forceSetup = true
 	}
 	userConfigPath, err := deps.userConfigPath()
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -155,6 +156,80 @@ func TestRunNoArgsLaunchesSetupTUIWithNilProviderWhenNoProviderConfigured(t *tes
 	}
 	assertCoreRegistry(t, launchedOptions.Registry)
 	assertAgentOptions(t, launchedOptions, 12, agent.PermissionModeAsk)
+}
+
+func TestRunNoArgsEntersSetupWhenResolveReportsNoActiveProvider(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cwd := t.TempDir()
+	setCLIUserConfigRoot(t)
+	userConfigPath := filepath.Join(t.TempDir(), "zero", "config.json")
+	var launchedOptions tui.Options
+	launched := false
+
+	exitCode := runWithDeps([]string{}, &stdout, &stderr, appDeps{
+		getwd: func() (string, error) {
+			return cwd, nil
+		},
+		resolveConfig: func(workspaceRoot string, overrides config.Overrides) (config.ResolvedConfig, error) {
+			return config.ResolvedConfig{}, fmt.Errorf("%w: active provider %q not found", config.ErrNoActiveProvider, "ghost")
+		},
+		newProvider: func(config.ProviderProfile) (zeroruntime.Provider, error) {
+			t.Fatal("newProvider should not be called without a resolved provider")
+			return nil, nil
+		},
+		userConfigPath: func() (string, error) {
+			return userConfigPath, nil
+		},
+		registerMCPTools: func(context.Context, *tools.Registry, config.MCPConfig, mcp.RegisterOptions) (mcpToolRuntime, error) {
+			return noopMCPRuntime{}, nil
+		},
+		runTUI: func(ctx context.Context, options tui.Options) int {
+			launched = true
+			launchedOptions = options
+			return 0
+		},
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (setup TUI launched), stderr=%q", exitCode, stderr.String())
+	}
+	if !launched {
+		t.Fatal("TUI was not launched; expected fallback into setup instead of a fatal error")
+	}
+	if !launchedOptions.Setup.Visible || !launchedOptions.Setup.Required {
+		t.Fatalf("Setup = %#v, want visible required setup", launchedOptions.Setup)
+	}
+	if launchedOptions.Provider != nil {
+		t.Fatalf("Provider = %#v, want nil for no-provider fallback", launchedOptions.Provider)
+	}
+}
+
+func TestRunNoArgsFailsWhenResolveErrorIsNotProviderRelated(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cwd := t.TempDir()
+	setCLIUserConfigRoot(t)
+
+	exitCode := runWithDeps([]string{}, &stdout, &stderr, appDeps{
+		getwd: func() (string, error) {
+			return cwd, nil
+		},
+		resolveConfig: func(workspaceRoot string, overrides config.Overrides) (config.ResolvedConfig, error) {
+			return config.ResolvedConfig{}, fmt.Errorf("invalid config JSON")
+		},
+		runTUI: func(ctx context.Context, options tui.Options) int {
+			t.Fatal("TUI must not launch on a non-provider resolve error")
+			return 0
+		},
+	})
+
+	if exitCode == 0 {
+		t.Fatal("exit code = 0, want non-zero for fatal config error")
+	}
+	if !strings.Contains(stderr.String(), "invalid config JSON") {
+		t.Fatalf("stderr = %q, want the underlying config error", stderr.String())
+	}
 }
 
 func TestRunNoArgsLaunchesTUIWithMCPState(t *testing.T) {

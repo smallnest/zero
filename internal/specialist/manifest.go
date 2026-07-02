@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gitlawb/zero/internal/config"
 	"github.com/Gitlawb/zero/internal/modelregistry"
 )
 
@@ -120,7 +121,7 @@ var knownToolNames = map[string]bool{
 }
 
 func DefaultPaths(workspaceRoot string) (Paths, error) {
-	userConfigDir, err := os.UserConfigDir()
+	userConfigDir, err := config.UserConfigDir()
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve user config directory: %w", err)
 	}

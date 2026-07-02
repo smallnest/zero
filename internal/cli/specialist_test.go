@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Gitlawb/zero/internal/config"
 )
 
 func TestRunSpecialistListShowAndPath(t *testing.T) {
@@ -326,7 +328,7 @@ func setSpecialistConfigRoot(t *testing.T) string {
 	default:
 		t.Setenv("XDG_CONFIG_HOME", root)
 	}
-	configRoot, err := os.UserConfigDir()
+	configRoot, err := config.UserConfigDir()
 	if err != nil {
 		t.Fatalf("UserConfigDir() error = %v", err)
 	}

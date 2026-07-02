@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -897,6 +898,9 @@ func TestResolveRejectsActiveProviderWithoutConfiguredProfiles(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `active provider "ghost" not found`) {
 		t.Fatalf("error = %q, want active provider missing message", err.Error())
+	}
+	if !errors.Is(err, ErrNoActiveProvider) {
+		t.Fatalf("error = %v, want errors.Is(err, ErrNoActiveProvider)", err)
 	}
 	if resolved.ActiveProvider != "" {
 		t.Fatalf("ActiveProvider = %q, want empty", resolved.ActiveProvider)
