@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agent.Run 循环流程图</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #34d399; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15, 23, 42, 0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 960px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card-dot.orange { background: #fb923c; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .card code { color: #cbd5e1; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>agent.Run — Agent 循环流程</h1>
+      </div>
+      <p class="subtitle">turn 循环：分区工具 → 主动压缩 → provider 流式（重连/停顿重试）→ 工具批处理（权限门+沙箱）→ 完成判定</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 1240">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowemerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowamber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrowrose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <marker id="arrowviolet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ================= ARROWS (behind boxes) ================= -->
+        <!-- entry → seed -->
+        <line x1="410" y1="96" x2="410" y2="124" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <!-- seed → loop top (turn++) -->
+        <line x1="410" y1="184" x2="410" y2="230" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <!-- inside loop vertical chain (x=410) -->
+        <line x1="410" y1="300" x2="410" y2="328" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowamber)"/>
+        <line x1="410" y1="388" x2="410" y2="416" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowamber)"/>
+        <line x1="410" y1="500" x2="410" y2="528" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <!-- collected → decision (no tool calls?) -->
+        <line x1="410" y1="600" x2="410" y2="628" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+
+        <!-- decision → tool batch (down, has tool calls) -->
+        <line x1="410" y1="712" x2="410" y2="792" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <text x="330" y="755" fill="#34d399" font-size="8" text-anchor="middle">有工具调用</text>
+
+        <!-- decision → finalize (right, no tool calls) -->
+        <line x1="560" y1="670" x2="720" y2="670" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowviolet)"/>
+        <text x="640" y="663" fill="#a78bfa" font-size="8" text-anchor="middle">无工具调用</text>
+
+        <!-- reactive compaction retry (left loop on stream) -->
+        <path d="M 260 458 L 150 458 Q 136 458 136 472 L 136 350 Q 136 336 150 336 L 258 336" fill="none" stroke="#fb7185" stroke-width="1.3" stroke-dasharray="5,5" marker-end="url(#arrowrose)"/>
+        <text x="120" y="404" fill="#fb7185" font-size="8" text-anchor="middle" transform="rotate(-90 120 404)">上下文超限 → 压缩重试</text>
+
+        <!-- tool batch → self-correct → escalation → back to loop top -->
+        <line x1="410" y1="928" x2="410" y2="956" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <!-- loop back to top (next turn) big right edge -->
+        <path d="M 560 990 L 900 990 Q 920 990 920 970 L 920 250 Q 920 230 900 230 L 560 230" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrowemerald)"/>
+        <text x="920" y="610" fill="#34d399" font-size="9" text-anchor="middle" transform="rotate(-90 920 610)">下一轮 turn（未完成则继续，直到 maxTurns）</text>
+
+        <!-- ================= NODES ================= -->
+
+        <!-- entry -->
+        <rect x="270" y="48" width="280" height="48" rx="6" fill="#0f172a"/>
+        <rect x="270" y="48" width="280" height="48" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="410" y="69" fill="white" font-size="12" font-weight="600" text-anchor="middle">agent.Run(ctx, prompt, provider, opts)</text>
+        <text x="410" y="85" fill="#94a3b8" font-size="8" text-anchor="middle">internal/agent/loop.go · 校验 provider · maxTurns/registry/权限默认值</text>
+
+        <!-- seed -->
+        <rect x="270" y="124" width="280" height="60" rx="6" fill="#0f172a"/>
+        <rect x="270" y="124" width="280" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="410" y="146" fill="white" font-size="12" font-weight="600" text-anchor="middle">初始化上下文</text>
+        <text x="410" y="163" fill="#94a3b8" font-size="9" text-anchor="middle">SeedMessages(系统提示 + prompt + images)</text>
+        <text x="410" y="176" fill="#94a3b8" font-size="8" text-anchor="middle">guards · compactor · loaded(延迟工具) · nudge 计数</text>
+
+        <!-- ============ Loop boundary ============ -->
+        <rect x="60" y="210" width="800" height="780" rx="12" fill="rgba(52, 211, 153, 0.04)" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="76" y="230" fill="#34d399" font-size="10" font-weight="600">for turn := 0; turn &lt; maxTurns（每轮一次）</text>
+
+        <!-- partitionTools -->
+        <rect x="280" y="240" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="280" y="240" width="260" height="60" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="262" fill="white" font-size="12" font-weight="600" text-anchor="middle">partitionTools</text>
+        <text x="410" y="279" fill="#94a3b8" font-size="9" text-anchor="middle">按权限模式 + loaded 计算本轮暴露工具集</text>
+        <text x="410" y="292" fill="#94a3b8" font-size="8" text-anchor="middle">超阈值的 MCP 工具折叠到 tool_search 之后</text>
+
+        <!-- proactive compaction -->
+        <rect x="280" y="328" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="280" y="328" width="260" height="60" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="350" fill="white" font-size="12" font-weight="600" text-anchor="middle">主动压缩 maybeCompact</text>
+        <text x="410" y="367" fill="#94a3b8" font-size="9" text-anchor="middle">接近上下文窗口 → 摘要最旧中段</text>
+        <text x="410" y="380" fill="#94a3b8" font-size="8" text-anchor="middle">ContextWindow=0 时为 no-op · OnContext 报预算</text>
+
+        <!-- stream -->
+        <rect x="260" y="416" width="300" height="84" rx="6" fill="#0f172a"/>
+        <rect x="260" y="416" width="300" height="84" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="410" y="438" fill="white" font-size="12" font-weight="600" text-anchor="middle">provider 流式 streamWithReconnect</text>
+        <text x="410" y="455" fill="#94a3b8" font-size="9" text-anchor="middle">CollectStream：转发 OnText/OnReasoning</text>
+        <text x="410" y="468" fill="#94a3b8" font-size="9" text-anchor="middle">OnToolCallStart/Delta/OnUsage</text>
+        <text x="410" y="482" fill="#94a3b8" font-size="8" text-anchor="middle">连接前重连 · 停顿超时重试（未出正文时）</text>
+        <text x="410" y="494" fill="#fb7185" font-size="8" text-anchor="middle">图片拒绝 / ctx 取消 → 直接返回</text>
+
+        <!-- append assistant msg -->
+        <rect x="280" y="528" width="260" height="52" rx="6" fill="#0f172a"/>
+        <rect x="280" y="528" width="260" height="52" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="410" y="549" fill="white" font-size="12" font-weight="600" text-anchor="middle">追加 assistant 消息</text>
+        <text x="410" y="566" fill="#94a3b8" font-size="8" text-anchor="middle">text + toolCalls + reasoning 块（供下轮回放）· FinishReason</text>
+
+        <!-- decision: tool calls? -->
+        <rect x="290" y="628" width="240" height="84" rx="6" fill="#0f172a"/>
+        <rect x="290" y="628" width="240" height="84" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="410" y="650" fill="white" font-size="12" font-weight="600" text-anchor="middle">是否有工具调用？</text>
+        <text x="410" y="667" fill="#94a3b8" font-size="8" text-anchor="middle">dropped 调用 → 提示重试 continue</text>
+        <text x="410" y="679" fill="#94a3b8" font-size="8" text-anchor="middle">空回合 → no-output 守卫 / 催继续</text>
+        <text x="410" y="693" fill="#94a3b8" font-size="8" text-anchor="middle">纯文本回合 → 完成判定（见右）</text>
+        <text x="410" y="705" fill="#94a3b8" font-size="8" text-anchor="middle">有工具调用 → 批处理（见下）</text>
+
+        <!-- tool batch -->
+        <rect x="240" y="792" width="340" height="136" rx="8" fill="#0f172a"/>
+        <rect x="240" y="792" width="340" height="136" rx="8" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="410" y="814" fill="white" font-size="12" font-weight="600" text-anchor="middle">工具批处理 executeToolCall（逐个）</text>
+        <text x="410" y="831" fill="#94a3b8" font-size="8" text-anchor="middle">OnToolCall → 过滤/spec 门 → PrePermission 拒绝</text>
+        <text x="410" y="843" fill="#94a3b8" font-size="8" text-anchor="middle">ask_user / request_permissions 在循环内拦截</text>
+        <text x="410" y="857" fill="#fb7185" font-size="9" text-anchor="middle">权限门 + Sandbox.Evaluate（策略/授权/前缀）</text>
+        <text x="410" y="871" fill="#94a3b8" font-size="8" text-anchor="middle">→ tool.Run → 追加 tool_result · OnToolResult</text>
+        <text x="410" y="885" fill="#94a3b8" font-size="8" text-anchor="middle">loaded 记录延迟工具 · stopReason → 提前结束</text>
+        <text x="410" y="899" fill="#94a3b8" font-size="8" text-anchor="middle">重复失败守卫：注入 schema 提示 / halt</text>
+        <text x="410" y="913" fill="#94a3b8" font-size="8" text-anchor="middle">abort（ask_user 取消 / ctx）→ 补齐占位后返回</text>
+
+        <!-- self-correct + escalation -->
+        <rect x="240" y="956" width="340" height="60" rx="6" fill="#0f172a"/>
+        <rect x="240" y="956" width="340" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="410" y="978" fill="white" font-size="12" font-weight="600" text-anchor="middle">批后处理</text>
+        <text x="410" y="994" fill="#94a3b8" font-size="8" text-anchor="middle">SelfCorrect.AfterEdit（变更文件并集，一次）→ 反馈入队</text>
+        <text x="410" y="1007" fill="#94a3b8" font-size="8" text-anchor="middle">模型升级 ModelSwitcher（每轮至多一次，非致命）</text>
+
+        <!-- ================= Finalize (right) ================= -->
+        <rect x="720" y="576" width="220" height="188" rx="8" fill="#0f172a"/>
+        <rect x="720" y="576" width="220" height="188" rx="8" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="830" y="598" fill="white" font-size="12" font-weight="600" text-anchor="middle">完成判定 / 返回</text>
+        <text x="830" y="617" fill="#94a3b8" font-size="8" text-anchor="middle">交互式：文本即最终答案</text>
+        <text x="830" y="629" fill="#94a3b8" font-size="8" text-anchor="middle">→ FinalAnswer, return</text>
+        <text x="830" y="647" fill="#fbbf24" font-size="8" text-anchor="middle">Headless（RequireCompletionSignal）：</text>
+        <text x="830" y="660" fill="#94a3b8" font-size="8" text-anchor="middle">① 自报未完成 → Incomplete</text>
+        <text x="830" y="673" fill="#94a3b8" font-size="8" text-anchor="middle">② 续接线索 → 催继续（有上限）</text>
+        <text x="830" y="686" fill="#94a3b8" font-size="8" text-anchor="middle">③ 任务验收检查（一次）</text>
+        <text x="830" y="704" fill="#94a3b8" font-size="8" text-anchor="middle">通过 → FinalAnswer 成功返回</text>
+        <text x="830" y="722" fill="#fb7185" font-size="8" text-anchor="middle">超 maxTurns → 未完成收尾</text>
+        <text x="830" y="740" fill="#94a3b8" font-size="8" text-anchor="middle">返回 Result{Turns, Messages,</text>
+        <text x="830" y="753" fill="#94a3b8" font-size="8" text-anchor="middle">FinalAnswer, FinishReason, Usage}</text>
+
+        <!-- ================= LEGEND (below all) ================= -->
+        <text x="120" y="1046" fill="white" font-size="10" font-weight="600">图例</text>
+        <rect x="170" y="1038" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="192" y="1046" fill="#94a3b8" font-size="8">循环/流式</text>
+        <rect x="290" y="1038" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="312" y="1046" fill="#94a3b8" font-size="8">工具分区/压缩</text>
+        <rect x="430" y="1038" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="452" y="1046" fill="#94a3b8" font-size="8">工具批处理</text>
+        <rect x="560" y="1038" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="582" y="1046" fill="#94a3b8" font-size="8">判定/返回</text>
+        <line x1="680" y1="1043" x2="700" y2="1043" stroke="#fb7185" stroke-width="1.3" stroke-dasharray="5,5"/>
+        <text x="706" y="1046" fill="#94a3b8" font-size="8">压缩/错误分支</text>
+        <line x1="820" y1="1043" x2="840" y2="1043" stroke="#34d399" stroke-width="1.5" stroke-dasharray="6,4"/>
+        <text x="846" y="1046" fill="#94a3b8" font-size="8">下一轮回边</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>请求前（每轮）</h3>
+        </div>
+        <ul>
+          <li>• <code>partitionTools</code>：按权限+loaded 定本轮工具集</li>
+          <li>• 超阈值 MCP 工具折叠到 <code>tool_search</code></li>
+          <li>• <code>maybeCompact</code> 主动压缩最旧中段</li>
+          <li>• <code>streamWithReconnect</code> 连接前重连 + 停顿重试</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>工具批处理</h3>
+        </div>
+        <ul>
+          <li>• 逐个 <code>executeToolCall</code>：过滤/spec 门/预拒绝</li>
+          <li>• 权限门 + <code>Sandbox.Evaluate</code>（策略/授权/前缀）</li>
+          <li>• <code>ask_user</code> / <code>request_permissions</code> 循环内拦截</li>
+          <li>• 重复失败守卫 · <code>stopReason</code> 提前结束</li>
+          <li>• 批后一次 <code>SelfCorrect.AfterEdit</code> + 模型升级</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>完成判定</h3>
+        </div>
+        <ul>
+          <li>• 交互式：文本即最终答案，立即返回</li>
+          <li>• Headless：自报未完成 / 续接催继续 / 验收检查</li>
+          <li>• 空回合、dropped 调用有专门守卫与 nudge</li>
+          <li>• 超 <code>maxTurns</code> 收尾 · 返回 <code>Result</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      agent.Run · Agent 循环流程（turn loop）· 基于 Gitlawb/zero internal/agent/loop.go
+    </p>
+  </div>
+</body>
+</html>

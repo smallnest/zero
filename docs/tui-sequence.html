@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zero TUI 序列图（含排队输入）</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Geist', sans-serif; background: #faf6f0; min-height: 100vh; padding: 2.5rem 2rem; color: #1c1917; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.6875rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #78716c; margin-bottom: 0.375rem; }
+    h1 { font-family: 'Instrument Serif', serif; font-size: 1.75rem; font-weight: 400; color: #1c1917; }
+    .subtitle { color: #78716c; font-size: 0.8125rem; margin-top: 0.375rem; }
+    .diagram-desc { color: #a8a29e; font-size: 0.6875rem; margin-top: 0.5rem; line-height: 1.5; font-style: italic; }
+    .diagram-container { background: #f0ebe3; border: 1px solid rgba(28,25,23,0.12); border-radius: 8px; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 1000px; display: block; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .card { background: #ffffff; border: 1px solid rgba(28,25,23,0.12); border-radius: 6px; padding: 1.25rem; }
+    .card-eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.625rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #a8a29e; margin-bottom: 0.5rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .card-dot.ink { background: #1c1917; }
+    .card-dot.accent { background: #d97706; }
+    .card-dot.muted { background: #78716c; }
+    .card-dot.link { background: #c05621; }
+    .card h3 { font-size: 0.8125rem; font-weight: 600; color: #1c1917; }
+    .card ul { list-style: none; color: #78716c; font-size: 0.75rem; line-height: 1.6; }
+    .card li { margin-bottom: 0.25rem; }
+    .footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(28,25,23,0.08); text-align: center; font-family: 'Geist Mono', monospace; color: #a8a29e; font-size: 0.625rem; letter-spacing: 0.04em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <p class="eyebrow">Sequence Diagram</p>
+      <h1>TUI 交互时序（含排队输入）</h1>
+      <p class="subtitle">用户 → Update → 运行中提交入队 queuedMessage → 首轮 agent.Run 返回 → drain → 自动发起下一轮</p>
+      <p class="diagram-desc"><b>序列图 (Sequence Diagram)</b> — 行为性图形·交互图。聚焦「运行中排队输入」在两次 agent.Run 之间的编排。</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1080 940">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#78716c"/>
+          </marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#d97706"/>
+          </marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#c05621"/>
+          </marker>
+          <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+            <circle cx="1" cy="1" r="0.9" fill="rgba(28,25,23,0.10)"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#faf6f0"/>
+        <rect width="100%" height="100%" fill="url(#dots)" opacity="0.6"/>
+
+        <!-- ============ 5 ACTORS — CX: 100, 330, 560, 780, 1000 ============ -->
+        <!-- User CX=100 -->
+        <rect x="56" y="24" width="88" height="36" rx="6" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" stroke-width="1"/>
+        <text x="100" y="47" fill="#1c1917" font-size="12" font-weight="600" text-anchor="middle">用户</text>
+
+        <!-- Update CX=330 (focal) -->
+        <rect x="282" y="24" width="96" height="36" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1.4"/>
+        <text x="330" y="42" fill="#1c1917" font-size="12" font-weight="600" text-anchor="middle">Model.Update</text>
+        <text x="330" y="54" fill="#78716c" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">Bubble Tea</text>
+
+        <!-- queuedMessage CX=560 -->
+        <rect x="510" y="24" width="100" height="36" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="560" y="42" fill="#1c1917" font-size="11" font-weight="600" text-anchor="middle">queuedMessage</text>
+        <text x="560" y="54" fill="#78716c" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">单槽 string</text>
+
+        <!-- runAgent(cmd) CX=780 -->
+        <rect x="730" y="24" width="100" height="36" rx="6" fill="#ffffff" stroke="#1c1917" stroke-width="1"/>
+        <text x="780" y="42" fill="#1c1917" font-size="11" font-weight="600" text-anchor="middle">runAgent</text>
+        <text x="780" y="54" fill="#78716c" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">tea.Cmd 协程</text>
+
+        <!-- agent.Run CX=1000 -->
+        <rect x="956" y="24" width="88" height="36" rx="6" fill="rgba(28,25,23,0.03)" stroke="rgba(28,25,23,0.30)" stroke-width="1"/>
+        <text x="1000" y="42" fill="#1c1917" font-size="11" font-weight="600" text-anchor="middle">agent.Run</text>
+        <text x="1000" y="54" fill="#78716c" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">turn loop</text>
+
+        <!-- ============ LIFELINES ============ -->
+        <line x1="100"  y1="60" x2="100"  y2="840" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="330"  y1="60" x2="330"  y2="840" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="560"  y1="60" x2="560"  y2="840" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="780"  y1="60" x2="780"  y2="840" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="1000" y1="60" x2="1000" y2="840" stroke="rgba(28,25,23,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+        <!-- ============ ACTIVATION BARS ============ -->
+        <!-- runAgent#1 active (first run) -->
+        <rect x="776" y="150" width="8" height="330" fill="rgba(28,25,23,0.06)" stroke="#78716c" stroke-width="0.8"/>
+        <rect x="996" y="166" width="8" height="298" fill="rgba(217,119,6,0.10)" stroke="#d97706" stroke-width="0.8"/>
+        <!-- queuedMessage held region -->
+        <rect x="556" y="256" width="8" height="272" fill="rgba(192,86,33,0.10)" stroke="#c05621" stroke-width="0.8"/>
+        <!-- runAgent#2 active (second run) -->
+        <rect x="776" y="560" width="8" height="240" fill="rgba(28,25,23,0.06)" stroke="#78716c" stroke-width="0.8"/>
+        <rect x="996" y="576" width="8" height="208" fill="rgba(217,119,6,0.10)" stroke="#d97706" stroke-width="0.8"/>
+
+        <!-- ============ MESSAGES ============ -->
+
+        <!-- 1. User → Update: 回车提交 prompt#1 -->
+        <line x1="100" y1="100" x2="326" y2="100" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="150" y="84" width="128" height="14" rx="2" fill="#faf6f0"/>
+        <text x="214" y="95" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">Enter → prompt#1</text>
+
+        <!-- 2. Update self: handleSubmit (m.pending=false) → beginRun -->
+        <path d="M334,116 L354,116 L354,132 L334,132" fill="none" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="358" y="115" width="220" height="14" rx="2" fill="#faf6f0"/>
+        <text x="363" y="126" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">handleSubmit [!pending] → beginRun</text>
+
+        <!-- 3. Update → runAgent: launchPrompt -->
+        <line x1="334" y1="156" x2="776" y2="156" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="470" y="140" width="170" height="14" rx="2" fill="#faf6f0"/>
+        <text x="555" y="151" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">runAgent(runID#1) tea.Cmd</text>
+
+        <!-- 4. runAgent → agent.Run: Run(prompt#1) (accent) -->
+        <line x1="784" y1="172" x2="996" y2="172" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="820" y="156" width="140" height="14" rx="2" fill="#faf6f0"/>
+        <text x="890" y="167" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">agent.Run(prompt#1)</text>
+
+        <!-- par frame: 运行中用户又输入 -->
+        <rect x="70" y="200" width="600" height="90" rx="4" fill="none" stroke="rgba(192,86,33,0.35)" stroke-width="1" stroke-dasharray="5,4"/>
+        <rect x="70" y="200" width="180" height="18" fill="#f0ebe3" stroke="rgba(192,86,33,0.35)" stroke-width="1"/>
+        <text x="80" y="213" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">par [运行中 · pending=true]</text>
+
+        <!-- 5. User → Update: 运行中回车 prompt#2 -->
+        <line x1="100" y1="240" x2="326" y2="240" stroke="#c05621" stroke-width="1" marker-end="url(#arrow-link)"/>
+        <rect x="140" y="224" width="150" height="14" rx="2" fill="#faf6f0"/>
+        <text x="215" y="235" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">Enter → prompt#2（运行中）</text>
+
+        <!-- 6. Update → queuedMessage: queueMessage (accent-link) -->
+        <line x1="334" y1="264" x2="556" y2="264" stroke="#c05621" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <rect x="360" y="248" width="180" height="14" rx="2" fill="#faf6f0"/>
+        <text x="450" y="259" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">queueMessage → 存 + 清输入框</text>
+
+        <!-- note: 覆盖语义 -->
+        <rect x="360" y="272" width="300" height="14" rx="2" fill="#faf6f0"/>
+        <text x="365" y="283" fill="#a8a29e" font-size="7.5" font-family="'Geist Mono', monospace" letter-spacing="0.04em">单槽：再排一条覆盖前一条 · 上方显示 [queued] 预览</text>
+
+        <!-- 7. agent.Run → Update: 回调 OnText/OnToolResult (during run) -->
+        <line x1="996" y1="330" x2="336" y2="330" stroke="#78716c" stroke-width="1" stroke-dasharray="5,4"/>
+        <rect x="560" y="314" width="240" height="14" rx="2" fill="#faf6f0"/>
+        <text x="680" y="325" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">回调经 program.Send 刷新 UI</text>
+
+        <!-- 8. agent.Run → runAgent → Update: Result#1 (accent return) -->
+        <line x1="996" y1="464" x2="784" y2="464" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,4"/>
+        <rect x="820" y="448" width="150" height="14" rx="2" fill="#faf6f0"/>
+        <text x="890" y="459" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">Result#1</text>
+
+        <line x1="776" y1="492" x2="336" y2="492" stroke="#78716c" stroke-width="1" stroke-dasharray="5,4"/>
+        <rect x="470" y="476" width="200" height="14" rx="2" fill="#faf6f0"/>
+        <text x="570" y="487" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">agentResponseMsg（pending=false）</text>
+
+        <!-- 9. Update → queuedMessage: launchQueuedMessageIfReady (drain) -->
+        <line x1="334" y1="516" x2="556" y2="516" stroke="#c05621" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <rect x="356" y="500" width="200" height="14" rx="2" fill="#faf6f0"/>
+        <text x="456" y="511" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">launchQueuedMessageIfReady</text>
+
+        <!-- 10. queuedMessage → Update: prompt#2 (drain return, cleared) -->
+        <line x1="556" y1="528" x2="336" y2="528" stroke="#c05621" stroke-width="1" stroke-dasharray="5,4"/>
+        <rect x="360" y="532" width="220" height="14" rx="2" fill="#faf6f0"/>
+        <text x="365" y="543" fill="#c05621" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">取出 prompt#2 并清空（无模态时）</text>
+
+        <!-- 11. Update → runAgent: launchPrompt(prompt#2) -->
+        <line x1="334" y1="566" x2="776" y2="566" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <rect x="470" y="550" width="180" height="14" rx="2" fill="#faf6f0"/>
+        <text x="560" y="561" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">runAgent(runID#2) tea.Cmd</text>
+
+        <!-- 12. runAgent → agent.Run: Run(prompt#2) (accent) -->
+        <line x1="784" y1="582" x2="996" y2="582" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="820" y="566" width="140" height="14" rx="2" fill="#faf6f0"/>
+        <text x="890" y="577" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">agent.Run(prompt#2)</text>
+
+        <!-- 13. Result#2 → Update -->
+        <line x1="996" y1="768" x2="784" y2="768" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,4"/>
+        <rect x="820" y="752" width="150" height="14" rx="2" fill="#faf6f0"/>
+        <text x="890" y="763" fill="#d97706" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">Result#2</text>
+
+        <!-- 14. Update → User: 渲染完成，等待下一次输入 -->
+        <line x1="326" y1="800" x2="104" y2="800" stroke="#1c1917" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <rect x="130" y="784" width="180" height="14" rx="2" fill="#faf6f0"/>
+        <text x="220" y="795" fill="#1c1917" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.04em">渲染帧 · 队列已空 · 等待输入</text>
+
+        <!-- ============ STAGE ANNOTATIONS (left) ============ -->
+        <text x="24" y="100" fill="#a8a29e" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.06em">TURN 1</text>
+        <text x="24" y="244" fill="#a8a29e" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.06em">QUEUE</text>
+        <text x="24" y="496" fill="#a8a29e" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.06em">DRAIN</text>
+        <text x="24" y="566" fill="#a8a29e" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.06em">TURN 2</text>
+        <text x="24" y="800" fill="#a8a29e" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.06em">IDLE</text>
+
+        <!-- gate note near drain -->
+        <rect x="360" y="640" width="380" height="40" rx="4" fill="none" stroke="rgba(28,25,23,0.18)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="370" y="656" fill="#a8a29e" font-size="7.5" font-family="'Geist Mono', monospace" letter-spacing="0.04em">drain 前置条件：!pending &amp;&amp; !exiting &amp;&amp; 无权限/askUser/specReview 模态</text>
+        <text x="370" y="670" fill="#a8a29e" font-size="7.5" font-family="'Geist Mono', monospace" letter-spacing="0.04em">Esc（运行中）：先清 queuedMessage，再按才取消当前运行</text>
+
+        <!-- ============ LEGEND ============ -->
+        <line x1="30" y1="816" x2="1050" y2="816" stroke="rgba(28,25,23,0.10)" stroke-width="0.8"/>
+        <text x="30" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+        <line x1="120" y1="836" x2="144" y2="836" stroke="#78716c" stroke-width="1" marker-end="url(#arrow)"/>
+        <text x="152" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">内部调用</text>
+        <line x1="280" y1="836" x2="304" y2="836" stroke="#c05621" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+        <text x="312" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">排队相关</text>
+        <line x1="440" y1="836" x2="464" y2="836" stroke="#d97706" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <text x="472" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">agent.Run 调用</text>
+        <line x1="620" y1="836" x2="644" y2="836" stroke="#78716c" stroke-width="1" stroke-dasharray="5,4"/>
+        <text x="652" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">返回</text>
+        <rect x="740" y="830" width="8" height="14" rx="2" fill="rgba(192,86,33,0.10)" stroke="#c05621" stroke-width="0.8"/>
+        <text x="756" y="840" fill="#78716c" font-size="8" font-family="'Geist Mono', monospace">队列驻留期</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="card-eyebrow">TURN 1</p>
+        <div class="card-header"><div class="card-dot accent"></div><h3>首轮启动</h3></div>
+        <ul>
+          <li>• 回车 → <code>handleSubmit</code>（<code>!pending</code>）→ <code>beginRun</code></li>
+          <li>• <code>runAgent</code> 在 <code>tea.Cmd</code> 协程后台发起 <code>agent.Run(prompt#1)</code></li>
+          <li>• 回调经 <code>program.Send</code> 持续刷新 UI</li>
+          <li>• 输入框全程保持可编辑</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="card-eyebrow">QUEUE</p>
+        <div class="card-header"><div class="card-dot link"></div><h3>运行中入队</h3></div>
+        <ul>
+          <li>• 运行中回车 → <code>handleSubmit</code>（<code>pending</code>）→ <code>queueMessage</code></li>
+          <li>• 存入 <code>queuedMessage</code>（单槽 string）+ 清输入框</li>
+          <li>• 再排一条会覆盖前一条，不累积</li>
+          <li>• 输入框上方显示 <code>[queued]</code> 预览</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="card-eyebrow">DRAIN</p>
+        <div class="card-header"><div class="card-dot ink"></div><h3>回合结束出队</h3></div>
+        <ul>
+          <li>• <code>agentResponseMsg</code> 先置 <code>pending=false</code></li>
+          <li>• <code>launchQueuedMessageIfReady</code> 取出并清空</li>
+          <li>• 无论上轮成功/出错都 drain</li>
+          <li>• 前置：无权限/askUser/specReview 模态且未退出</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="card-eyebrow">EDGE</p>
+        <div class="card-header"><div class="card-dot muted"></div><h3>边界与取消</h3></div>
+        <ul>
+          <li>• 编排发生在两次 <code>agent.Run</code> 之间，循环本身无感</li>
+          <li>• Esc（运行中）：先清队列，再按才取消运行</li>
+          <li>• 退出中（Ctrl+C 延迟退出）不入队</li>
+          <li>• 测试：<code>internal/tui/queued_message_test.go</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      zero · TUI 排队输入序列图 · Gitlawb/zero internal/tui/model.go · queued_message.go
+    </div>
+  </div>
+</body>
+</html>

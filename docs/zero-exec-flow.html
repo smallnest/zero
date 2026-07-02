@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zero exec 一次性执行流程图</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #34d399; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15, 23, 42, 0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 960px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card-dot.orange { background: #fb923c; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .card code { color: #cbd5e1; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>zero exec — 一次性执行流程</h1>
+      </div>
+      <p class="subtitle">runExec：参数解析 → 离线工具注册 → 配置解析 → 沙箱与 Provider → agent.Run 单轮循环 → 退出</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 1240">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowemerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowamber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrowrose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ================= ARROWS (behind boxes) ================= -->
+        <!-- main pipeline vertical, x=360 -->
+        <line x1="360" y1="98" x2="360" y2="126" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <line x1="360" y1="186" x2="360" y2="214" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <line x1="360" y1="326" x2="360" y2="354" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <line x1="360" y1="474" x2="360" y2="502" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowamber)"/>
+        <line x1="360" y1="592" x2="360" y2="620" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowamber)"/>
+        <line x1="360" y1="740" x2="360" y2="768" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <line x1="360" y1="948" x2="360" y2="976" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+        <line x1="360" y1="1088" x2="360" y2="1116" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowemerald)"/>
+
+        <!-- config resolve fail → provider_error (right branch) -->
+        <line x1="530" y1="440" x2="720" y2="440" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowrose)"/>
+        <text x="625" y="433" fill="#fb7185" font-size="8" text-anchor="middle">resolve 失败</text>
+
+        <!-- --list-tools short-circuit -->
+        <line x1="530" y1="530" x2="720" y2="530" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <text x="625" y="523" fill="#94a3b8" font-size="8" text-anchor="middle">--list-tools</text>
+
+        <!-- spec-draft branch -->
+        <line x1="530" y1="700" x2="720" y2="700" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,5" marker-end="url(#arrowhead)"/>
+        <text x="625" y="693" fill="#a78bfa" font-size="8" text-anchor="middle">--spec</text>
+
+        <!-- agent.Run callbacks → event writer / recorder (right) -->
+        <line x1="600" y1="1030" x2="720" y2="1030" stroke="#34d399" stroke-width="1.2" marker-end="url(#arrowemerald)"/>
+
+        <!-- ================= NODES (main pipeline) ================= -->
+
+        <!-- 1. runExec entry -->
+        <rect x="230" y="48" width="260" height="50" rx="6" fill="#0f172a"/>
+        <rect x="230" y="48" width="260" height="50" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="360" y="70" fill="white" font-size="12" font-weight="600" text-anchor="middle">runExec  (internal/cli/exec.go)</text>
+        <text x="360" y="87" fill="#94a3b8" font-size="9" text-anchor="middle">入口：-p / exec 子命令</text>
+
+        <!-- 2. parse + mode -->
+        <rect x="230" y="126" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="230" y="126" width="260" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="360" y="148" fill="white" font-size="12" font-weight="600" text-anchor="middle">参数解析 + 模式展开</text>
+        <text x="360" y="165" fill="#94a3b8" font-size="9" text-anchor="middle">parseExecArgs → applyExecMode</text>
+        <text x="360" y="178" fill="#94a3b8" font-size="8" text-anchor="middle">模式预置 model/effort/max-turns/工具过滤</text>
+
+        <!-- 3. workspace + worktree -->
+        <rect x="230" y="214" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="230" y="214" width="260" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="360" y="236" fill="white" font-size="12" font-weight="600" text-anchor="middle">工作区解析</text>
+        <text x="360" y="253" fill="#94a3b8" font-size="9" text-anchor="middle">resolveWorkspaceRoot</text>
+        <text x="360" y="266" fill="#94a3b8" font-size="8" text-anchor="middle">--worktree → prepareWorktree（隔离副本）</text>
+
+        <!-- 4. offline tool registration (boundary) -->
+        <rect x="60" y="290" width="600" height="184" rx="10" fill="rgba(6, 78, 59, 0.05)" stroke="#34d399" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="76" y="308" fill="#34d399" font-size="10" font-weight="600">离线工具注册（provider 之前 · 供 --list-tools / 过滤校验）</text>
+
+        <rect x="90" y="322" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="90" y="322" width="260" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="220" y="344" fill="white" font-size="12" font-weight="600" text-anchor="middle">核心注册表</text>
+        <text x="220" y="361" fill="#94a3b8" font-size="9" text-anchor="middle">newCoreRegistry（nil-scope 占位）</text>
+        <text x="220" y="374" fill="#94a3b8" font-size="8" text-anchor="middle">+ escalate_model（--allow-escalation）</text>
+
+        <rect x="90" y="398" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="90" y="398" width="260" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="220" y="420" fill="white" font-size="12" font-weight="600" text-anchor="middle">Specialist（按自主级别）</text>
+        <text x="220" y="437" fill="#94a3b8" font-size="9" text-anchor="middle">shouldRegister… → swarm.MaxTeamSize</text>
+        <text x="220" y="450" fill="#94a3b8" font-size="8" text-anchor="middle">medium/high/unsafe 才注册 Task 工具</text>
+
+        <rect x="380" y="322" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="380" y="322" width="260" height="60" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="510" y="344" fill="white" font-size="12" font-weight="600" text-anchor="middle">MCP 工具</text>
+        <text x="510" y="361" fill="#94a3b8" font-size="9" text-anchor="middle">registerMCPToolsForWorkspace</text>
+        <text x="510" y="374" fill="#94a3b8" font-size="8" text-anchor="middle">execMCPAutonomy · 权限/token 存储</text>
+
+        <rect x="380" y="398" width="260" height="60" rx="6" fill="#0f172a"/>
+        <rect x="380" y="398" width="260" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="510" y="420" fill="white" font-size="12" font-weight="600" text-anchor="middle">Plugins + 权限模式</text>
+        <text x="510" y="437" fill="#94a3b8" font-size="9" text-anchor="middle">activatePlugins（工具+hooks+skills）</text>
+        <text x="510" y="450" fill="#94a3b8" font-size="8" text-anchor="middle">resolveExecPermissionMode · 失败即跳过</text>
+
+        <!-- 5. config resolve -->
+        <rect x="230" y="502" width="260" height="90" rx="6" fill="#0f172a"/>
+        <rect x="230" y="502" width="260" height="90" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="360" y="524" fill="white" font-size="12" font-weight="600" text-anchor="middle">config.Resolve（含 Overrides）</text>
+        <text x="360" y="541" fill="#94a3b8" font-size="9" text-anchor="middle">--model / --max-turns 覆盖</text>
+        <text x="360" y="555" fill="#94a3b8" font-size="9" text-anchor="middle">modelRegistry 解析选定模型</text>
+        <text x="360" y="569" fill="#94a3b8" font-size="8" text-anchor="middle">+ localControl 工具 · validateExecToolFilters</text>
+        <text x="360" y="583" fill="#fbbf24" font-size="8" text-anchor="middle">exec 无 provider → 直接 provider_error 退出</text>
+
+        <!-- 6. sandbox scope + engine -->
+        <rect x="230" y="620" width="260" height="120" rx="6" fill="#0f172a"/>
+        <rect x="230" y="620" width="260" height="120" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="360" y="642" fill="white" font-size="12" font-weight="600" text-anchor="middle">沙箱装配</text>
+        <text x="360" y="660" fill="#94a3b8" font-size="9" text-anchor="middle">sandbox.NewScope（写根 = workspace</text>
+        <text x="360" y="673" fill="#94a3b8" font-size="9" text-anchor="middle">+ AdditionalWriteRoots + --add-dir）</text>
+        <text x="360" y="690" fill="#94a3b8" font-size="8" text-anchor="middle">重注册 CoreToolsScoped（覆盖 nil-scope 占位）</text>
+        <text x="360" y="705" fill="#94a3b8" font-size="9" text-anchor="middle">buildExecSandboxEngine</text>
+        <text x="360" y="722" fill="#94a3b8" font-size="8" text-anchor="middle">策略 · 后端 · 授权</text>
+
+        <!-- 7. provider -->
+        <rect x="230" y="768" width="260" height="90" rx="6" fill="#0f172a"/>
+        <rect x="230" y="768" width="260" height="90" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="360" y="790" fill="white" font-size="12" font-weight="600" text-anchor="middle">buildProvider</text>
+        <text x="360" y="807" fill="#94a3b8" font-size="9" text-anchor="middle">providers.New（OAuth 感知 · 已注入 key）</text>
+        <text x="360" y="821" fill="#94a3b8" font-size="8" text-anchor="middle">modelSwitcher（--allow-escalation 时中途升级）</text>
+        <text x="360" y="835" fill="#94a3b8" font-size="9" text-anchor="middle">resolveExecRunMetadata · notify.New</text>
+        <text x="360" y="849" fill="#94a3b8" font-size="8" text-anchor="middle">可选 webhook 通知 sink</text>
+
+        <!-- 8. session + writer -->
+        <rect x="230" y="858" width="260" height="90" rx="6" fill="#0f172a"/>
+        <rect x="230" y="858" width="260" height="90" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="360" y="880" fill="white" font-size="12" font-weight="600" text-anchor="middle">会话与输出准备</text>
+        <text x="360" y="897" fill="#94a3b8" font-size="9" text-anchor="middle">sessions.PrepareExec（resume/fork/tag）</text>
+        <text x="360" y="911" fill="#94a3b8" font-size="8" text-anchor="middle">execEventWriter（text/json/stream-json）</text>
+        <text x="360" y="925" fill="#94a3b8" font-size="9" text-anchor="middle">sessionRecorder · signalContext</text>
+        <text x="360" y="939" fill="#94a3b8" font-size="8" text-anchor="middle">newExecSelfCorrector（--self-correct）</text>
+
+        <!-- 9. agent.Run -->
+        <rect x="120" y="976" width="480" height="112" rx="8" fill="#0f172a"/>
+        <rect x="120" y="976" width="480" height="112" rx="8" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="360" y="998" fill="white" font-size="12" font-weight="600" text-anchor="middle">agent.Run(ctx, prompt, provider, Options)</text>
+        <text x="360" y="1016" fill="#94a3b8" font-size="9" text-anchor="middle">RequireCompletionSignal=true（无工具调用不算完成 → 催继续）</text>
+        <text x="360" y="1030" fill="#94a3b8" font-size="8" text-anchor="middle">Registry · Sandbox · PermissionMode · Autonomy · Hooks · FileTracker</text>
+        <text x="360" y="1044" fill="#94a3b8" font-size="8" text-anchor="middle">循环：分区工具 → 压缩 → provider 流式 → 执行工具（受门控）</text>
+        <text x="360" y="1062" fill="#22d3ee" font-size="9" text-anchor="middle">回调 OnText / OnToolCall / OnPermission</text>
+        <text x="360" y="1076" fill="#22d3ee" font-size="9" text-anchor="middle">OnToolResult / OnUsage</text>
+
+        <!-- 10. exit -->
+        <rect x="200" y="1116" width="320" height="80" rx="6" fill="#0f172a"/>
+        <rect x="200" y="1116" width="320" height="80" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="360" y="1138" fill="white" font-size="12" font-weight="600" text-anchor="middle">完成与退出</text>
+        <text x="360" y="1155" fill="#94a3b8" font-size="9" text-anchor="middle">notifier.Notify · 记录 message/结果事件</text>
+        <text x="360" y="1169" fill="#94a3b8" font-size="8" text-anchor="middle">Ctrl+C/SIGTERM → interrupted（干净退出）</text>
+        <text x="360" y="1185" fill="#94a3b8" font-size="8" text-anchor="middle">失败 → provider_error · 成功 → exitSuccess</text>
+
+        <!-- ================= RIGHT-SIDE branches / sinks ================= -->
+        <!-- provider_error early exit -->
+        <rect x="730" y="412" width="210" height="56" rx="6" fill="#0f172a"/>
+        <rect x="730" y="412" width="210" height="56" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="835" y="434" fill="white" font-size="11" font-weight="600" text-anchor="middle">provider_error 提前退出</text>
+        <text x="835" y="451" fill="#94a3b8" font-size="8" text-anchor="middle">先跑 preflight / prompt 校验</text>
+        <text x="835" y="463" fill="#94a3b8" font-size="8" text-anchor="middle">给出可修复的错误信息</text>
+
+        <!-- list-tools sink -->
+        <rect x="730" y="502" width="210" height="56" rx="6" fill="#0f172a"/>
+        <rect x="730" y="502" width="210" height="56" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="835" y="524" fill="white" font-size="11" font-weight="600" text-anchor="middle">--list-tools 输出</text>
+        <text x="835" y="541" fill="#94a3b8" font-size="8" text-anchor="middle">formatExecToolList</text>
+        <text x="835" y="553" fill="#94a3b8" font-size="8" text-anchor="middle">离线短路，不启动 provider</text>
+
+        <!-- spec-draft branch -->
+        <rect x="730" y="672" width="210" height="56" rx="6" fill="#0f172a"/>
+        <rect x="730" y="672" width="210" height="56" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="835" y="694" fill="white" font-size="11" font-weight="600" text-anchor="middle">Spec 草稿分支</text>
+        <text x="835" y="711" fill="#94a3b8" font-size="8" text-anchor="middle">runExecSpecDraft</text>
+        <text x="835" y="723" fill="#94a3b8" font-size="8" text-anchor="middle">PermissionModeSpecDraft</text>
+
+        <!-- output sinks from agent.Run -->
+        <rect x="730" y="988" width="210" height="88" rx="6" fill="#0f172a"/>
+        <rect x="730" y="988" width="210" height="88" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="835" y="1010" fill="white" font-size="11" font-weight="600" text-anchor="middle">输出与持久化</text>
+        <text x="835" y="1027" fill="#94a3b8" font-size="8" text-anchor="middle">stdout：text / -o json /</text>
+        <text x="835" y="1039" fill="#94a3b8" font-size="8" text-anchor="middle">stream-json（stderr 独立）</text>
+        <text x="835" y="1055" fill="#94a3b8" font-size="8" text-anchor="middle">sessionRecorder 落盘事件</text>
+        <text x="835" y="1067" fill="#94a3b8" font-size="8" text-anchor="middle">checkpoint 快照（可回退）</text>
+
+        <!-- ================= LEGEND (below everything) ================= -->
+        <text x="80" y="1226" fill="white" font-size="10" font-weight="600">图例</text>
+        <rect x="130" y="1218" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="152" y="1226" fill="#94a3b8" font-size="8">流程/exec</text>
+        <rect x="240" y="1218" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="262" y="1226" fill="#94a3b8" font-size="8">工具注册表</text>
+        <rect x="360" y="1218" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="382" y="1226" fill="#94a3b8" font-size="8">配置/沙箱</text>
+        <rect x="475" y="1218" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="497" y="1226" fill="#94a3b8" font-size="8">会话/Agent循环</text>
+        <rect x="620" y="1218" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="642" y="1226" fill="#94a3b8" font-size="8">错误退出</text>
+        <rect x="720" y="1218" width="16" height="10" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1"/>
+        <text x="742" y="1226" fill="#94a3b8" font-size="8">MCP/输出</text>
+        <line x1="820" y1="1223" x2="840" y2="1223" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="4,4"/>
+        <text x="846" y="1226" fill="#94a3b8" font-size="8">分支/短路</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>离线阶段（provider 之前）</h3>
+        </div>
+        <ul>
+          <li>• <code>parseExecArgs → applyExecMode</code> 展开模式预置</li>
+          <li>• 工作区解析 + 可选 <code>--worktree</code> 隔离副本</li>
+          <li>• 注册核心/escalate/specialist/MCP/plugin 工具</li>
+          <li>• <code>--list-tools</code> 在此短路，全程不启动 provider</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>装配阶段</h3>
+        </div>
+        <ul>
+          <li>• <code>config.Resolve</code> 叠加 <code>--model/--max-turns</code></li>
+          <li>• 无 provider → 直接 <code>provider_error</code> 退出（与 TUI 不同）</li>
+          <li>• <code>NewScope</code> + 重注册 <code>CoreToolsScoped</code></li>
+          <li>• <code>buildExecSandboxEngine</code> + <code>buildProvider</code></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>执行与退出</h3>
+        </div>
+        <ul>
+          <li>• <code>agent.Run</code> 单次运行，<code>RequireCompletionSignal</code></li>
+          <li>• 回调驱动 <code>execEventWriter</code> + <code>sessionRecorder</code></li>
+          <li>• 输出：text / <code>-o json</code> / stream-json</li>
+          <li>• 中断=interrupted · 失败=provider_error · 成功=0</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      zero exec · 一次性执行流程（runExec → agent.Run）· 基于 Gitlawb/zero internal/cli/exec.go
+    </p>
+  </div>
+</body>
+</html>
