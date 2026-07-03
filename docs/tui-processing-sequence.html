@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zero TUI 处理详细序列图</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #020617; min-height: 100vh; padding: 2rem; color: white; }
+    .container { max-width: 1320px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container { background: rgba(15, 23, 42, 0.5); border-radius: 1rem; border: 1px solid #1e293b; padding: 1.5rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 1240px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: rgba(15, 23, 42, 0.5); border-radius: 0.75rem; border: 1px solid #1e293b; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card-dot.orange { background: #fb923c; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; line-height: 1.5; }
+    .card li code { color: #cbd5e1; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>zero TUI 处理详细序列图</h1>
+      </div>
+      <p class="subtitle">Bubble Tea 事件循环：从按键提交到 Agent 流式回传、权限/追问阻塞、回合结束与 flush 落盘</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1240 1760">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowSync" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrowRun" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowMsg" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb923c" />
+          </marker>
+          <marker id="arrowSec" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <marker id="arrowRet" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+            <polygon points="0 0, 9 3.5, 0 7" fill="#94a3b8" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ PARTICIPANT LIFELINES ============ -->
+        <!-- x-centers: User=110  Runtime=340  Update=580  handleSubmit=790  runAgent(goroutine)=990  AgentLoop=1150 -->
+
+        <!-- Lifelines (dashed) -->
+        <line x1="110"  y1="112" x2="110"  y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+        <line x1="340"  y1="112" x2="340"  y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+        <line x1="580"  y1="112" x2="580"  y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+        <line x1="790"  y1="112" x2="790"  y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+        <line x1="990"  y1="112" x2="990"  y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+        <line x1="1150" y1="112" x2="1150" y2="1700" stroke="#334155" stroke-width="1" stroke-dasharray="3,4"/>
+
+        <!-- Participant headers -->
+        <rect x="40"  y="60" width="140" height="46" rx="6" fill="#0f172a"/>
+        <rect x="40"  y="60" width="140" height="46" rx="6" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="110" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">User / TTY</text>
+        <text x="110" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">终端 (os.Stdin)</text>
+
+        <rect x="268" y="60" width="144" height="46" rx="6" fill="#0f172a"/>
+        <rect x="268" y="60" width="144" height="46" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="340" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">Bubble Tea</text>
+        <text x="340" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">tea.Program</text>
+
+        <rect x="508" y="60" width="144" height="46" rx="6" fill="#0f172a"/>
+        <rect x="508" y="60" width="144" height="46" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="580" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">model.Update</text>
+        <text x="580" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">model.go</text>
+
+        <rect x="720" y="60" width="140" height="46" rx="6" fill="#0f172a"/>
+        <rect x="720" y="60" width="140" height="46" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="790" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">handleSubmit</text>
+        <text x="790" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">parseCommand</text>
+
+        <rect x="918" y="60" width="144" height="46" rx="6" fill="#0f172a"/>
+        <rect x="918" y="60" width="144" height="46" rx="6" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="990" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">runAgent</text>
+        <text x="990" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">goroutine (tea.Cmd)</text>
+
+        <rect x="1078" y="60" width="144" height="46" rx="6" fill="#0f172a"/>
+        <rect x="1078" y="60" width="144" height="46" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="1150" y="80" fill="white" font-size="11" font-weight="600" text-anchor="middle">Agent Loop</text>
+        <text x="1150" y="96" fill="#94a3b8" font-size="8" text-anchor="middle">zeroruntime + LLM</text>
+
+        <!-- ============ PHASE 0: STARTUP ============ -->
+        <rect x="30" y="128" width="1180" height="20" rx="4" fill="rgba(148,163,184,0.10)" stroke="#334155" stroke-width="1"/>
+        <text x="42" y="142" fill="#cbd5e1" font-size="9" font-weight="600">阶段 0 · 启动 · Run() → program.Run()</text>
+
+        <!-- Run: TTY check + sink wiring -->
+        <rect x="60" y="158" width="500" height="34" rx="5" fill="rgba(15,23,42,0.85)" stroke="#475569" stroke-width="1"/>
+        <text x="72" y="173" fill="#e2e8f0" font-size="8.5">run.go: term.IsTerminal(stdin) — 非 TTY 直接退出码 2</text>
+        <text x="72" y="185" fill="#64748b" font-size="8">RuntimeMessageSink 包装 program.Send；newModel(ctx, options)</text>
+
+        <!-- User -> Runtime: program.Run -->
+        <line x1="110" y1="204" x2="336" y2="204" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="120" y="199" fill="#94a3b8" font-size="8">program.Run() 进入事件循环</text>
+
+        <!-- Runtime -> Update: Init -->
+        <line x1="340" y1="228" x2="576" y2="228" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowSync)"/>
+        <text x="352" y="223" fill="#94a3b8" font-size="8">Init() → tea.Batch(cmds…)</text>
+        <!-- Update activation for Init -->
+        <rect x="574" y="234" width="12" height="70" rx="2" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" stroke-width="0.8"/>
+        <rect x="600" y="238" width="360" height="62" rx="5" fill="rgba(15,23,42,0.85)" stroke="#334155" stroke-width="1"/>
+        <text x="612" y="252" fill="#cbd5e1" font-size="8" font-weight="600">Init 发起的异步命令：</text>
+        <text x="612" y="264" fill="#94a3b8" font-size="8">• tea.RequestWindowSize → WindowSizeMsg</text>
+        <text x="612" y="276" fill="#94a3b8" font-size="8">• tea.RequestBackgroundColor（auto 主题）</text>
+        <text x="612" y="288" fill="#94a3b8" font-size="8">• gitSweepCmd（FILES 侧栏基线）+ 模型发现 + PR watcher</text>
+
+        <!-- Runtime -> Update: WindowSizeMsg -->
+        <line x1="340" y1="322" x2="576" y2="322" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowSync)"/>
+        <text x="352" y="317" fill="#94a3b8" font-size="8">WindowSizeMsg{W,H} → 设置宽高/composer 宽度</text>
+
+        <!-- Update -> Runtime: first View -->
+        <line x1="576" y1="346" x2="344" y2="346" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="360" y="341" fill="#64748b" font-size="8">View() → 渲染首帧 (alt-screen)</text>
+
+        <!-- ============ PHASE 1: SUBMIT ============ -->
+        <rect x="30" y="368" width="1180" height="20" rx="4" fill="rgba(52,211,153,0.10)" stroke="#065f46" stroke-width="1"/>
+        <text x="42" y="382" fill="#6ee7b7" font-size="9" font-weight="600">阶段 1 · 用户提交 · KeyPress → handleSubmit → beginRun</text>
+
+        <!-- User -> Runtime: keypress Enter -->
+        <line x1="110" y1="408" x2="336" y2="408" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="120" y="403" fill="#94a3b8" font-size="8">输入 prompt + Enter</text>
+
+        <!-- Runtime -> Update: KeyPressMsg -->
+        <line x1="340" y1="430" x2="576" y2="430" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowSync)"/>
+        <text x="352" y="425" fill="#94a3b8" font-size="8">tea.KeyPressMsg (Enter)</text>
+
+        <!-- Update activation -->
+        <rect x="574" y="436" width="12" height="150" rx="2" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" stroke-width="0.8"/>
+
+        <!-- Update -> handleSubmit -->
+        <line x1="586" y1="452" x2="786" y2="452" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRun)"/>
+        <text x="596" y="447" fill="#94a3b8" font-size="8">handleSubmit()</text>
+        <rect x="784" y="458" width="12" height="96" rx="2" fill="rgba(52,211,153,0.18)" stroke="#34d399" stroke-width="0.8"/>
+
+        <!-- handleSubmit note: parseCommand -->
+        <rect x="640" y="466" width="130" height="80" rx="5" fill="rgba(6,78,59,0.25)" stroke="#34d399" stroke-width="1"/>
+        <text x="650" y="480" fill="#cbd5e1" font-size="8" font-weight="600">parseCommand:</text>
+        <text x="650" y="493" fill="#94a3b8" font-size="7.5">commandEmpty → no-op</text>
+        <text x="650" y="505" fill="#94a3b8" font-size="7.5">/clear /model /mcp…</text>
+        <text x="650" y="517" fill="#94a3b8" font-size="7.5">→ 本地处理无 LLM</text>
+        <text x="650" y="531" fill="#6ee7b7" font-size="7.5">commandPrompt</text>
+        <text x="650" y="541" fill="#6ee7b7" font-size="7.5">→ launchPrompt</text>
+
+        <!-- pending? queue -->
+        <rect x="60" y="466" width="200" height="46" rx="5" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="72" y="481" fill="#fb923c" font-size="8" font-weight="600">若 m.pending == true：</text>
+        <text x="72" y="493" fill="#fdba74" font-size="7.5">queueMessage(text) 排队，</text>
+        <text x="72" y="504" fill="#fdba74" font-size="7.5">回合结束后 launchQueuedMessage</text>
+
+        <!-- handleSubmit -> Update (beginRun on model copy) -->
+        <line x1="784" y1="568" x2="588" y2="568" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="600" y="563" fill="#64748b" font-size="8">beginRun(cancel): runID++, pending=true, turnStartedAt</text>
+
+        <!-- Update -> runAgent: tea.Batch -->
+        <line x1="586" y1="600" x2="986" y2="600" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="596" y="595" fill="#94a3b8" font-size="8">返回 tea.Batch( runAgent(runID, runCtx, prompt, images), spinner.Tick )</text>
+
+        <!-- Update -> Runtime: back (spinner tick self-schedule) -->
+        <line x1="576" y1="624" x2="344" y2="624" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="360" y="619" fill="#64748b" font-size="8">spinner.TickMsg 自调度：working 状态行动画</text>
+
+        <!-- ============ PHASE 2: STREAMING ============ -->
+        <rect x="30" y="646" width="1180" height="20" rx="4" fill="rgba(167,139,250,0.10)" stroke="#5b21b6" stroke-width="1"/>
+        <text x="42" y="660" fill="#c4b5fd" font-size="9" font-weight="600">阶段 2 · Agent 执行与流式回传 · runAgent goroutine ↔ 回调 → sink → program.Send</text>
+
+        <!-- runAgent activation (long) -->
+        <rect x="984" y="672" width="12" height="640" rx="2" fill="rgba(251,191,36,0.16)" stroke="#fbbf24" stroke-width="0.8"/>
+        <!-- Agent loop activation -->
+        <rect x="1144" y="700" width="12" height="560" rx="2" fill="rgba(167,139,250,0.16)" stroke="#a78bfa" stroke-width="0.8"/>
+
+        <!-- runAgent -> AgentLoop: options + callbacks -->
+        <line x1="996" y1="700" x2="1142" y2="700" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="900" y="690" fill="#94a3b8" font-size="8" text-anchor="middle">agentOptions（含 OnText / OnToolCall* / OnPermissionRequest / OnAskUser 回调）</text>
+
+        <!-- note runAgent: LSP self-correct -->
+        <rect x="820" y="714" width="150" height="44" rx="5" fill="rgba(120,53,15,0.2)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="830" y="728" fill="#cbd5e1" font-size="7.5" font-weight="600">SelfCorrect（默认开）：</text>
+        <text x="830" y="740" fill="#94a3b8" font-size="7.5">LSP 诊断 + 按模式自动修复</text>
+        <text x="830" y="751" fill="#94a3b8" font-size="7.5">/selfcorrect on 才跑测试</text>
+
+        <!-- === streaming text delta === -->
+        <text x="1150" y="782" fill="#c4b5fd" font-size="8" text-anchor="middle">循环: LLM 流式 token / 工具调用</text>
+
+        <!-- AgentLoop -> runAgent: OnText -->
+        <line x1="1144" y1="800" x2="998" y2="800" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+        <text x="1070" y="795" fill="#94a3b8" font-size="7.5" text-anchor="middle">OnText(delta)</text>
+        <!-- runAgent -> Update: agentTextMsg via sink -->
+        <line x1="984" y1="820" x2="588" y2="820" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowMsg)"/>
+        <text x="786" y="815" fill="#fdba74" font-size="8" text-anchor="middle">sink(agentTextMsg{runID, delta}) → program.Send</text>
+        <rect x="574" y="826" width="12" height="26" rx="2" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" stroke-width="0.8"/>
+        <text x="596" y="844" fill="#64748b" font-size="7.5">streamingText += delta; recordStreamingDelta; fade tick</text>
+
+        <!-- OnToolCallStart/Delta -->
+        <line x1="1144" y1="874" x2="998" y2="874" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+        <text x="1070" y="869" fill="#94a3b8" font-size="7.5" text-anchor="middle">OnToolCallStart / Delta</text>
+        <line x1="984" y1="894" x2="588" y2="894" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowMsg)"/>
+        <text x="786" y="889" fill="#fdba74" font-size="8" text-anchor="middle">toolCallStreamStartMsg / toolCallStreamDeltaMsg</text>
+        <rect x="574" y="900" width="12" height="26" rx="2" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" stroke-width="0.8"/>
+        <text x="596" y="918" fill="#64748b" font-size="7.5">streamCallDecoder.feed()：实时显示 write_file/edit 正在写入的内容</text>
+
+        <!-- agentRowMsg (完成的工具行 / reasoning 行) -->
+        <line x1="984" y1="946" x2="588" y2="946" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowMsg)"/>
+        <text x="786" y="941" fill="#fdba74" font-size="8" text-anchor="middle">agentRowMsg / agentReasoningMsg / agentUsageMsg</text>
+        <text x="786" y="962" fill="#64748b" font-size="7.5" text-anchor="middle">追加 transcriptRow；specialistStart/Progress/Complete、planUpdateMsg 同理经 sink</text>
+
+        <!-- ==== SECURITY SUB-BLOCK: permission ==== -->
+        <rect x="540" y="984" width="640" height="150" rx="8" fill="rgba(136,19,55,0.10)" stroke="#fb7185" stroke-width="1" stroke-dasharray="5,4"/>
+        <text x="552" y="1000" fill="#fb7185" font-size="8.5" font-weight="600">阻塞式交互 · 权限请求（channel 同步，goroutine 挂起等待主循环）</text>
+
+        <!-- AgentLoop -> runAgent: OnPermissionRequest -->
+        <line x1="1144" y1="1018" x2="998" y2="1018" stroke="#fb7185" stroke-width="1.3" marker-end="url(#arrowSec)"/>
+        <text x="1070" y="1013" fill="#fda4af" font-size="7.5" text-anchor="middle">OnPermissionRequest(req)</text>
+        <!-- runAgent -> Update: permissionRequestMsg -->
+        <line x1="984" y1="1038" x2="588" y2="1038" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowSec)"/>
+        <text x="786" y="1033" fill="#fda4af" font-size="8" text-anchor="middle">sendPermissionRequest → permissionRequestMsg{req, decide}</text>
+        <text x="786" y="1054" fill="#64748b" font-size="7.5" text-anchor="middle">m.pendingPermission = {req, decide}；goroutine 在 &lt;-decisionCh 阻塞</text>
+
+        <!-- Update -> User: render prompt -->
+        <line x1="574" y1="1074" x2="116" y2="1074" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="345" y="1069" fill="#64748b" font-size="8" text-anchor="middle">渲染权限卡片（Allow / Deny）</text>
+        <!-- User -> Update: key decision -->
+        <line x1="110" y1="1098" x2="576" y2="1098" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowSec)"/>
+        <text x="345" y="1093" fill="#fda4af" font-size="8" text-anchor="middle">按键选择 → decide(decision)</text>
+        <!-- Update -> runAgent: unblock -->
+        <line x1="588" y1="1120" x2="982" y2="1120" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowSec)"/>
+        <text x="786" y="1115" fill="#fda4af" font-size="8" text-anchor="middle">decisionCh &lt;- decision：goroutine 恢复，工具执行/拒绝</text>
+
+        <!-- ==== ask_user (类似，压缩描述) ==== -->
+        <rect x="540" y="1146" width="640" height="70" rx="8" fill="rgba(251,113,133,0.06)" stroke="#fb7185" stroke-width="1" stroke-dasharray="5,4"/>
+        <text x="552" y="1162" fill="#fb7185" font-size="8.5" font-weight="600">追问 ask_user（同样 channel 阻塞）</text>
+        <text x="552" y="1177" fill="#94a3b8" font-size="7.5">OnAskUser(req) → askUserRequestMsg{req, answer}；pendingAskUser 记录多问题状态</text>
+        <text x="552" y="1189" fill="#94a3b8" font-size="7.5">submitAskUser() → answer([]string)：answerCh 解阻塞（无问题时立即以空答复自动解决）</text>
+        <text x="552" y="1206" fill="#64748b" font-size="7.5">spec review 走 pendingSpecReview，同为 noBlockingModal() 判定的模态之一</text>
+
+        <!-- ============ PHASE 3: TURN END ============ -->
+        <rect x="30" y="1230" width="1180" height="20" rx="4" fill="rgba(251,191,36,0.10)" stroke="#92400e" stroke-width="1"/>
+        <text x="42" y="1244" fill="#fcd34d" font-size="9" font-weight="600">阶段 3 · 回合结束 · agentResponseMsg → pending=false → 排队消息启动</text>
+
+        <!-- AgentLoop -> runAgent: return -->
+        <line x1="1144" y1="1272" x2="998" y2="1272" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrowhead)"/>
+        <text x="1070" y="1267" fill="#94a3b8" font-size="7.5" text-anchor="middle">循环结束 (err 或完成)</text>
+
+        <!-- runAgent -> Update: agentResponseMsg -->
+        <line x1="984" y1="1296" x2="588" y2="1296" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowMsg)"/>
+        <text x="786" y="1291" fill="#fdba74" font-size="8" text-anchor="middle">return agentResponseMsg{runID, rows, usageEvents, sessionEvents, err…}</text>
+        <rect x="574" y="1302" width="12" height="120" rx="2" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" stroke-width="0.8"/>
+
+        <rect x="600" y="1310" width="380" height="104" rx="5" fill="rgba(15,23,42,0.9)" stroke="#334155" stroke-width="1"/>
+        <text x="612" y="1324" fill="#cbd5e1" font-size="8" font-weight="600">agentResponseMsg 处理（runID == activeRunID）：</text>
+        <text x="612" y="1337" fill="#94a3b8" font-size="7.5">• clearStreamingToolCall(); pending=false; resetStreamingFade()</text>
+        <text x="612" y="1349" fill="#94a3b8" font-size="7.5">• runCancel(); activeRunID=0; plan.completeRemaining()（成功时）</text>
+        <text x="612" y="1361" fill="#94a3b8" font-size="7.5">• recordUsageEvent + appendSessionEvents（持久化会话/checkpoint）</text>
+        <text x="612" y="1373" fill="#94a3b8" font-size="7.5">• 追加 msg.rows 到 transcript</text>
+        <text x="612" y="1387" fill="#fdba74" font-size="7.5">• runID != activeRunID（已取消）：仅 flush session events 保 /rewind</text>
+        <text x="612" y="1401" fill="#6ee7b7" font-size="7.5">• launchQueuedMessageIfReady()：有排队 prompt 则开启下一回合</text>
+
+        <!-- ============ PHASE 4: EVERY UPDATE TAIL + VIEW ============ -->
+        <rect x="30" y="1436" width="1180" height="20" rx="4" fill="rgba(34,211,238,0.10)" stroke="#0e7490" stroke-width="1"/>
+        <text x="42" y="1450" fill="#67e8f9" font-size="9" font-weight="600">阶段 4 · 每次 Update 收尾 · syncChatScroll → syncMouseCapture → settleTranscript → View</text>
+
+        <!-- Update self-call box -->
+        <rect x="440" y="1470" width="380" height="96" rx="5" fill="rgba(8,51,68,0.3)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="452" y="1484" fill="#cbd5e1" font-size="8" font-weight="600">Update() 尾部（每条消息后都执行）：</text>
+        <text x="452" y="1497" fill="#94a3b8" font-size="7.5">1. updateModel(msg) 得到新 model</text>
+        <text x="452" y="1509" fill="#94a3b8" font-size="7.5">2. syncChatScroll() — 跟随底部/保持滚动位</text>
+        <text x="452" y="1521" fill="#94a3b8" font-size="7.5">3. syncMouseCapture() — 依据模态开关鼠标捕获</text>
+        <text x="452" y="1533" fill="#94a3b8" font-size="7.5">4. settleTranscript() — 推进 flush 前沿</text>
+        <text x="452" y="1547" fill="#94a3b8" font-size="7.5">5. flushedMsg ack → drainFlushQueue()（串行落盘）</text>
+        <text x="452" y="1560" fill="#64748b" font-size="7.5">alt-screen: 保留在托管视图；inline: tea.Println 落入 scrollback</text>
+
+        <!-- Update -> Runtime: flush prints -->
+        <line x1="576" y1="1588" x2="344" y2="1588" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowSync)"/>
+        <text x="360" y="1583" fill="#64748b" font-size="8">tea.Sequence(Println(out), flushedMsg)</text>
+
+        <!-- Runtime -> Update: flushedMsg -->
+        <line x1="340" y1="1610" x2="576" y2="1610" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowSync)"/>
+        <text x="352" y="1605" fill="#64748b" font-size="8">flushedMsg → printInFlight=false，再次 drain</text>
+
+        <!-- Update -> Runtime: View -->
+        <line x1="576" y1="1634" x2="344" y2="1634" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="360" y="1629" fill="#64748b" font-size="8">View() → tea.View（AltScreen / BackgroundColor / MouseMode）</text>
+
+        <!-- Runtime -> User: repaint -->
+        <line x1="340" y1="1658" x2="116" y2="1658" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="128" y="1653" fill="#94a3b8" font-size="8">重绘终端帧</text>
+
+        <!-- ============ LEGEND ============ -->
+        <text x="60" y="1698" fill="white" font-size="10" font-weight="600">图例</text>
+
+        <line x1="120" y1="1694" x2="150" y2="1694" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowSync)"/>
+        <text x="156" y="1697" fill="#94a3b8" font-size="8">Runtime↔UI 同步消息</text>
+
+        <line x1="300" y1="1694" x2="330" y2="1694" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowRun)"/>
+        <text x="336" y="1697" fill="#94a3b8" font-size="8">同步调用</text>
+
+        <line x1="430" y1="1694" x2="460" y2="1694" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowMsg)"/>
+        <text x="466" y="1697" fill="#94a3b8" font-size="8">sink → program.Send 异步消息</text>
+
+        <line x1="670" y1="1694" x2="700" y2="1694" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowSec)"/>
+        <text x="706" y="1697" fill="#94a3b8" font-size="8">阻塞式权限/追问 (channel)</text>
+
+        <line x1="910" y1="1694" x2="940" y2="1694" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowRet)"/>
+        <text x="946" y="1697" fill="#94a3b8" font-size="8">返回 / 渲染</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>Bubble Tea 事件循环</h3></div>
+        <ul>
+          <li>• 单一 <code>Update</code> goroutine 串行处理所有 <code>tea.Msg</code></li>
+          <li>• <code>Update</code> 只返回新 model + <code>tea.Cmd</code>，永不阻塞</li>
+          <li>• 尾部固定链：syncScroll → syncMouse → settleTranscript</li>
+          <li>• <code>View()</code> 返回 <code>tea.View</code>，alt-screen 全屏托管</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot orange"></div><h3>流式回传通道</h3></div>
+        <ul>
+          <li>• <code>runAgent</code> 在 goroutine 内跑 Agent Loop</li>
+          <li>• 回调 <code>OnText/OnToolCall*</code> 经 <code>RuntimeMessageSink</code></li>
+          <li>• sink → <code>program.Send</code> 把消息投回 <code>Update</code></li>
+          <li>• <code>runID != activeRunID</code> 的迟到消息被丢弃</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot rose"></div><h3>阻塞式交互</h3></div>
+        <ul>
+          <li>• 权限/追问用 <code>chan</code> 让 goroutine 挂起</li>
+          <li>• 主循环渲染卡片，用户按键调用 <code>decide()/answer()</code></li>
+          <li>• channel 收到值后 goroutine 恢复执行</li>
+          <li>• <code>ctx.Done()</code>（取消）也会解阻塞并拒绝</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>回合生命周期</h3></div>
+        <ul>
+          <li>• <code>beginRun</code>：runID++、pending=true、清理上回合状态</li>
+          <li>• pending 期间新 prompt 进入 <code>queueMessage</code></li>
+          <li>• <code>agentResponseMsg</code> 收尾并 launch 排队消息</li>
+          <li>• Ctrl+C 取消：延迟 quit 直到 checkpoint flush 完成</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot violet"></div><h3>持久化与自纠错</h3></div>
+        <ul>
+          <li>• sessionEvents 落盘保 <code>/resume</code> 与 <code>/rewind</code></li>
+          <li>• 每个 mutating 工具前写 checkpoint blob</li>
+          <li>• SelfCorrect 默认开：LSP 诊断，按权限模式自动修</li>
+          <li>• <code>/selfcorrect on</code> 才追加项目测试</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot amber"></div><h3>启动关键点</h3></div>
+        <ul>
+          <li>• <code>Run()</code>：非 TTY 直接退出码 2（防止挂起）</li>
+          <li>• <code>Init()</code> 主动请求 WindowSize，不依赖终端推送</li>
+          <li>• auto 主题请求背景色决定明/暗</li>
+          <li>• 模型发现预热 context 用量计（token 窗口）</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      zero CLI · internal/tui (model.go / run.go / flush.go) · Bubble Tea v2 · 生成于 2026-07-03
+    </p>
+  </div>
+</body>
+</html>
