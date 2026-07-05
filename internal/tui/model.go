@@ -1354,7 +1354,7 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// home screen or a narrow terminal. Hiding reflows the chat to full
 			// width, so mirror the width-change bookkeeping (re-wrap the streaming
 			// fade, resize the composer) the WindowSizeMsg path does.
-			if m.noBlockingModal() && m.sidebarToggleAllowed() {
+			if !m.transcriptDetailed && m.noBlockingModal() && m.sidebarToggleAllowed() {
 				// Just show/hide — no transcript notice. The reflow IS the feedback,
 				// and emitting a line every toggle piled up noise in the chat.
 				m.sidebarHidden = !m.sidebarHidden
@@ -1421,24 +1421,15 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case keyIs(msg, tea.KeyPgUp):
-			if m.transcriptDetailed {
-				return m, nil
-			}
-			// A stationary mouse over a bodyY-keyed transcript hover target would
-			// otherwise stay lit at the scrolled-away bodyY until the next real
-			// motion event (see clearHover) — same reasoning as the wheel-scroll
-			// cases in mouse.go.
 			m = m.clearHover()
 			return m.scrollChat(m.chatPageScrollLines()), nil
 		case keyIs(msg, tea.KeyPgDown):
-			if m.transcriptDetailed {
-				return m, nil
-			}
 			m = m.clearHover()
 			return m.scrollChat(-m.chatPageScrollLines()), nil
 		case keyIs(msg, tea.KeyDown):
 			if m.transcriptDetailed {
-				return m, nil
+				m = m.clearHover()
+				return m.scrollChat(-1), nil
 			}
 			if m.pendingPermission != nil {
 				return m.movePermissionCursor(1), nil
@@ -1480,7 +1471,8 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.transcriptDetailed {
-				return m, nil
+				m = m.clearHover()
+				return m.scrollChat(1), nil
 			}
 			if m.pendingPermission != nil {
 				return m.movePermissionCursor(-1), nil
@@ -2297,7 +2289,7 @@ func (m model) transcriptView() string {
 	if m.transcriptEmpty() && !m.pending && viewportOverlay != "" {
 		emptyOverlay = viewportOverlay
 	}
-	bodyItems := m.transcriptBodyItems(width, emptyOverlay)
+	bodyItems := m.transcriptBodyItems(width, emptyOverlay, false)
 
 	footer := m.footerView(width)
 
@@ -2337,7 +2329,7 @@ func (m model) twoColumnTranscriptView() string {
 	width := chatW
 
 	suggestionOverlay := m.suggestionOverlay(width)
-	bodyItems := m.transcriptBodyItems(width, "")
+	bodyItems := m.transcriptBodyItems(width, "", false)
 	footer := m.footerView(width)
 	overlayForViewport := suggestionOverlay
 	if m.transcriptEmpty() && !m.pending {
@@ -2767,7 +2759,15 @@ func (m model) chatTranscriptViewport() (transcriptViewport, bool) {
 		return transcriptViewport{}, false
 	}
 	width := m.chatColumnWidth()
-	items := m.transcriptBodyItems(width, "")
+	if m.transcriptDetailed {
+		items := m.transcriptBodyItems(width, "", true)
+		body := measureTranscriptBodyItems(items, m.transcriptBodyHeights)
+		header := detailedTranscriptHeader(width) + "\n" + zeroTheme.line.Render(strings.Repeat("-", width))
+		footer := m.detailedTranscriptFooter(width)
+		frame := m.scrollableTranscriptFrame(header, footer)
+		return transcriptViewportForLayout(body, frame, m.chatScrollOffset), true
+	}
+	items := m.transcriptBodyItems(width, "", false)
 	body := measureTranscriptBodyItems(items, m.transcriptBodyHeights)
 	frame := m.scrollableTranscriptFrame(m.pinnedTitleBar(width), m.footerView(width))
 	return transcriptViewportForLayout(body, frame, m.chatScrollOffset), true

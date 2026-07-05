@@ -257,7 +257,7 @@ func (m model) syncMouseCapture() (model, tea.Cmd) {
 }
 
 func (m model) mouseOverComposer(msg tea.MouseMsg) bool {
-	if !m.altScreen || m.height <= 0 {
+	if !m.altScreen || m.height <= 0 || m.transcriptDetailed {
 		return false
 	}
 	width := m.chatColumnWidth()

@@ -920,6 +920,30 @@ func TestMouseCaptureOnlyDuringInteractiveSetupStages(t *testing.T) {
 	}
 }
 
+// TestComposerMouseSelectionBlockedInDetailedMode: composer mouse hit-testing
+// is disabled while the detailed transcript view is active, so wheel and click
+// events in the composer area reach the transcript body instead.
+func TestComposerMouseSelectionBlockedInDetailedMode(t *testing.T) {
+	m := mouseTestModel()
+	m.input.SetValue("some text")
+
+	updated, _ := m.Update(testKeyCtrl('o'))
+	m = updated.(model)
+
+	if !m.transcriptDetailed {
+		t.Fatal("sanity check: Ctrl+O should enter detailed mode")
+	}
+	if !m.composerMouseSelectionBlocked() {
+		t.Fatal("composerMouseSelectionBlocked should be true in detailed mode")
+	}
+
+	width := m.chatColumnWidth()
+	frame := m.scrollableTranscriptFrame(m.pinnedTitleBar(width), m.footerView(width))
+	if m.mouseOverComposer(testMouseWheel(tea.MouseWheelUp, 0, frame.composerRect.y)) {
+		t.Fatal("mouseOverComposer should return false in detailed mode")
+	}
+}
+
 func firstTranscriptTextMouseY(t *testing.T, m model) int {
 	t.Helper()
 	_, y := firstTranscriptTextMousePoint(t, m)

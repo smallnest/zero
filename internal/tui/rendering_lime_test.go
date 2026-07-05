@@ -511,6 +511,50 @@ func TestSelectableAssistantRowKeepsMarkdownSemanticsPlain(t *testing.T) {
 	}
 }
 
+func TestStripMarkdownRenderControlsStripsAllANSI(t *testing.T) {
+	// Bold markers that renderAssistantMarkdownText embeds for prose formatting.
+	withBold := "\x1b[1mhello\x1b[22m world"
+	if got := stripMarkdownRenderControls(withBold); got != "hello world" {
+		t.Fatalf("stripMarkdownRenderControls(%q) = %q, want %q", withBold, got, "hello world")
+	}
+	// Color sequences from highlightCodeAuto for fenced code blocks.
+	withColor := "\x1b[38;2;236;236;238mdef\x1b[0m hello():"
+	if got := stripMarkdownRenderControls(withColor); got != "def hello():" {
+		t.Fatalf("stripMarkdownRenderControls(%q) = %q, want %q", withColor, got, "def hello():")
+	}
+	// Sequences that combine both (bold + underline + color).
+	withBoldColor := "\x1b[1;4;38;2;236;236;238mW\x1b[m"
+	if got := stripMarkdownRenderControls(withBoldColor); got != "W" {
+		t.Fatalf("stripMarkdownRenderControls(%q) = %q, want %q", withBoldColor, got, "W")
+	}
+}
+
+func TestSelectedTranscriptTextStripsANSIFromHighlightedCode(t *testing.T) {
+	m := limeTestModel()
+	m.width, m.height = 120, 40
+	m.altScreen = true
+	m.headerPrinted = true
+	code := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}`
+	row := transcriptRow{kind: rowAssistant, text: "First, here's the code:\n\n```go\n" + code + "\n```\n\nThat's it.", final: true}
+	m.transcript = append(m.transcript, row)
+	m.flushed = len(m.transcript)
+
+	// The highlighted code block contains ANSI color sequences from chroma;
+	// verify none survive in the selectable text used for clipboard copy.
+	_, selectable := m.renderSelectableAssistantRow(0, row, 72, 0)
+	for _, line := range selectable {
+		if ansiPattern.MatchString(line.text) {
+			t.Fatalf("selectable text leaked ANSI escapes: %q", line.text)
+		}
+	}
+}
+
 func TestFinalAnswerRendersPlainTextAndCompletionLine(t *testing.T) {
 	m := limeTestModel()
 	row := transcriptRow{
