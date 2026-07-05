@@ -12,6 +12,7 @@ import (
 
 	"github.com/Gitlawb/zero/internal/agent"
 	"github.com/Gitlawb/zero/internal/config"
+	"github.com/Gitlawb/zero/internal/errhint"
 	"github.com/Gitlawb/zero/internal/imageinput"
 	"github.com/Gitlawb/zero/internal/lsp"
 	"github.com/Gitlawb/zero/internal/modelregistry"
@@ -948,6 +949,14 @@ func writeExecProviderError(stdout io.Writer, stderr io.Writer, format execOutpu
 	}
 	if _, err := fmt.Fprintf(stderr, "[zero] %s\n", message); err != nil {
 		return exitCrash
+	}
+	// Append a one-line next step for recognized provider failures (auth /
+	// rate-limit / connectivity / …). The classifier gates on a provider-origin
+	// marker, so non-provider codes (sandbox_error, mcp_error) never draw a hint.
+	if hint := errhint.CLIHint(errors.New(message)); hint != "" {
+		if _, err := fmt.Fprintf(stderr, "[zero] %s\n", hint); err != nil {
+			return exitCrash
+		}
 	}
 	return exitProvider
 }

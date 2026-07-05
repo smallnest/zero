@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -80,6 +82,12 @@ func (m model) startNewSession() model {
 	m.pendingImageLabels = nil
 	m.pendingDocuments = nil
 	m.queuedMessage = ""
+	// The remembered /retry attachment snapshot belongs to the previous session
+	// too — dropping it keeps a post-/new /retry from re-staging old images or
+	// documents. lastPrompt is composer history (like inputHistory) and stays.
+	m.lastImages = nil
+	m.lastImageLabels = nil
+	m.lastDocuments = nil
 
 	note := "Started a new session."
 	if previousID != "" {
@@ -220,9 +228,11 @@ func (m model) sessionPrompt(prompt string) string {
 
 func (m model) resolveResumeSession(args string) (*sessions.Metadata, error) {
 	if strings.EqualFold(args, "latest") {
-		// Latest *resumable* conversation, so "latest" never lands on a child or
-		// spec sub-run. An explicit `/resume <id>` below still resolves any session.
-		latest, err := m.sessionStore.LatestResumable()
+		// Latest *resumable* conversation IN THIS WORKSPACE, so "latest" never lands
+		// on a child, a spec sub-run, or a session from another project (matching the
+		// workspace-scoped picker). An explicit `/resume <id>` below still resolves
+		// any session regardless of workspace.
+		latest, err := m.latestResumableInWorkspace()
 		if err != nil {
 			return nil, err
 		}
@@ -321,6 +331,18 @@ func (m model) newSessionPicker() *commandPicker {
 	now := m.now()
 	items := make([]pickerItem, 0, len(metas))
 	for _, meta := range metas {
+		// Workspace-scoped: hide sessions from other project directories so /resume
+		// lists this workspace's history, not every project's. Checked BEFORE the
+		// per-session event read below, so a large global history doesn't pay 50
+		// full file reads to build one workspace's list. Sessions with no recorded
+		// Cwd (older runs) stay visible rather than vanishing.
+		if !sessionMatchesWorkspace(meta.Cwd, m.cwd) {
+			continue
+		}
+		// A zero-event session has nothing to resume — skip it without a file read.
+		if meta.EventCount == 0 {
+			continue
+		}
 		// Skip empty/failed runs (no assistant output, no tool calls) — e.g. the
 		// same prompt retried while the model wasn't responding. They have nothing
 		// to resume and otherwise flood the list with identical rows. Still on disk.
@@ -356,6 +378,52 @@ func (m model) newSessionPicker() *commandPicker {
 // resuming: a tool call/result, or a non-user message with real content (not the
 // no-output guardrail stop). Empty/failed runs return false and are hidden from
 // the picker (they stay on disk). Errors fail open (the session is kept).
+// latestResumableInWorkspace returns the most-recently-updated resumable session
+// belonging to the current workspace, or nil when none exist. ListResumable is
+// ordered latest-first, so the first qualifying match is the latest. It applies
+// the SAME filters as newSessionPicker — workspace membership, non-empty
+// metadata, and real resumable content — so `/resume latest` never lands on a
+// zero-event or empty/failed run the picker would have hidden.
+func (m model) latestResumableInWorkspace() (*sessions.Metadata, error) {
+	metas, err := m.sessionStore.ListResumable()
+	if err != nil {
+		return nil, err
+	}
+	for i := range metas {
+		if !sessionMatchesWorkspace(metas[i].Cwd, m.cwd) {
+			continue
+		}
+		if metas[i].EventCount == 0 {
+			continue
+		}
+		if !m.sessionHasResumableContent(metas[i].SessionID) {
+			continue
+		}
+		return &metas[i], nil
+	}
+	return nil, nil
+}
+
+// sessionMatchesWorkspace reports whether a session recorded in sessionCwd
+// belongs to the current workspaceCwd. A session with no recorded Cwd (older
+// runs) or an unknown current workspace is kept visible rather than filtered out,
+// so the scoping never hides history it can't confidently place elsewhere. On
+// Windows the comparison is case-insensitive, since the filesystem is and the
+// same workspace can be spelled with different casing (C:\Proj vs c:\proj).
+func sessionMatchesWorkspace(sessionCwd, workspaceCwd string) bool {
+	sessionCwd = strings.TrimSpace(sessionCwd)
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if sessionCwd == "" || workspaceCwd == "" {
+		return true
+	}
+	a := filepath.Clean(sessionCwd)
+	b := filepath.Clean(workspaceCwd)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func (m model) sessionHasResumableContent(sessionID string) bool {
 	events, err := m.sessionStore.ReadEvents(sessionID)
 	if err != nil {

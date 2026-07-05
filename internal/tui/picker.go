@@ -102,14 +102,81 @@ func (p *commandPicker) applyQuery() {
 		p.selected = clampInt(p.selected, 0, maxInt(0, len(p.items)-1))
 		return
 	}
-	filtered := make([]pickerItem, 0, len(source))
-	for _, item := range source {
-		if strings.Contains(strings.ToLower(strings.Join([]string{item.Group, item.Label, item.Value, item.Meta}, " ")), query) {
-			filtered = append(filtered, item)
+
+	// Rank matches (exact < prefix < contains < subsequence) instead of a flat
+	// substring filter, so the closest match to "sonnet 4.5" lands at the top
+	// rather than buried behind scrolling. Groups stay contiguous — a group is
+	// ordered by its best-matching item and never split into two header blocks —
+	// so the grouped model picker still renders one header per provider.
+	type entry struct {
+		item  pickerItem
+		score int
+		order int
+	}
+	groupFirst := map[string]int{}
+	groupBest := map[string]int{}
+	entries := make([]entry, 0, len(source))
+	for index, item := range source {
+		score, ok := scorePickerItem(item, query)
+		if !ok {
+			continue
 		}
+		if _, seen := groupFirst[item.Group]; !seen {
+			groupFirst[item.Group] = index
+		}
+		if best, seen := groupBest[item.Group]; !seen || score < best {
+			groupBest[item.Group] = score
+		}
+		entries = append(entries, entry{item: item, score: score, order: index})
+	}
+	sort.SliceStable(entries, func(a, b int) bool {
+		ga, gb := entries[a].item.Group, entries[b].item.Group
+		if ga != gb {
+			// Most-relevant group first; ties keep original group appearance order so
+			// a group is never scattered across the list.
+			if groupBest[ga] != groupBest[gb] {
+				return groupBest[ga] < groupBest[gb]
+			}
+			return groupFirst[ga] < groupFirst[gb]
+		}
+		// Within a group: best match first, then original order.
+		if entries[a].score != entries[b].score {
+			return entries[a].score < entries[b].score
+		}
+		return entries[a].order < entries[b].order
+	})
+	filtered := make([]pickerItem, 0, len(entries))
+	for _, e := range entries {
+		filtered = append(filtered, e.item)
 	}
 	p.items = filtered
 	p.selected = 0
+}
+
+// scorePickerItem ranks an item against a lowercased query; lower is better, and
+// ok is false when it doesn't match at all. Tiers mirror scoreFileSuggestion:
+// exact/prefix/contains on the label (what the user reads) beat matches deeper in
+// the joined haystack, and a fuzzy subsequence is the last-resort match.
+func scorePickerItem(item pickerItem, query string) (int, bool) {
+	label := strings.ToLower(item.Label)
+	hay := strings.ToLower(strings.Join([]string{item.Group, item.Label, item.Value, item.Meta}, " "))
+	switch {
+	case label == query:
+		return 0, true
+	case strings.HasPrefix(label, query):
+		return 20, true
+	case strings.Contains(label, query):
+		return 40, true
+	case strings.HasPrefix(hay, query):
+		return 60, true
+	case strings.Contains(hay, query):
+		return 80, true
+	default:
+		if gap, ok := fuzzySubsequenceGap(hay, query); ok {
+			return 120 + gap, true
+		}
+		return 0, false
+	}
 }
 
 // newModelPicker lists active (non-deprecated) models, preselecting the active

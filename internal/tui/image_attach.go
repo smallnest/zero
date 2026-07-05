@@ -292,6 +292,18 @@ func renderImageChips(labels []string) string {
 // and staged documents, e.g. "[Image #1] [Image #2] [Doc #1]". Returns "" when
 // nothing is staged. Numbered (not named) so a long screenshot path never shows
 // in the composer.
+// visionDropWarning returns a one-line notice when images are staged but the
+// (now active) model can't accept them, so switching to a non-vision model warns
+// the user immediately at switch time instead of silently dropping the images at
+// submit. Empty when there is nothing staged or the model supports vision.
+func (m model) visionDropWarning() string {
+	if len(m.pendingImages) == 0 || m.modelSupportsVisionTUI() {
+		return ""
+	}
+	return fmt.Sprintf("⚠ %d staged image(s) will be dropped — %s has no vision support.",
+		len(m.pendingImages), displayValue(m.modelName, "the active model"))
+}
+
 func renderAttachmentChips(imageLabels []string, docs []pendingDocument) string {
 	chips := make([]string, 0, len(imageLabels)+len(docs))
 	for i := range imageLabels {

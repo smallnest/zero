@@ -25,7 +25,12 @@ const maxTurnsFinalAnswerPrompt = "You have reached the tool-turn limit. Do not 
 // WITH NO OUTPUT yet is re-issued on a fresh connection before giving up. Only
 // the no-output case is retried (a partial turn would duplicate), so this is a
 // safe recovery for a stalled/dead pooled connection.
-const maxStreamStallRetries = 2
+//
+// Set to 1 (not 2): each attempt can itself idle for the full stream timeout
+// (~5min) before the stall is even detected, so 2 retries left an interactive
+// session frozen for ~15min. One retry keeps the common single-hiccup recovery
+// while bounding the worst case to ~2× the idle timeout.
+const maxStreamStallRetries = 1
 
 const (
 	toolResultMetaControl       = "control"
@@ -145,6 +150,11 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 	// has already been demanded this run, so it fires at most once.
 	acceptanceRequested := false
 
+	// toolDefCache memoizes each tool's rendered JSON-schema definition across
+	// turns (a tool's advertised schema is stable for the run), so partitionTools
+	// doesn't re-run the recursive schema→map conversion for every tool every turn.
+	toolDefCache := map[string]zeroruntime.ToolDefinition{}
+
 	result := Result{Messages: copyMessages(messages)}
 	for turn := 0; turn < maxTurns; turn++ {
 		result.Turns = turn + 1
@@ -153,7 +163,7 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 		// the tool-definition tokens (they ride on every request) in its estimate.
 		// partitionTools depends only on registry/permissions/options/loaded, not on
 		// the messages, so computing it before compaction is safe.
-		exposed, _ := partitionTools(registry, permissionMode, options, loaded)
+		exposed, _ := partitionToolsCached(registry, permissionMode, options, loaded, toolDefCache)
 
 		// PROACTIVE compaction: if the history is approaching the model's
 		// context window, summarize the oldest middle before building the
@@ -339,6 +349,16 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 				return result, errors.New(collected.Error)
 			}
 		}
+
+		// Calibrate the compaction token estimator against the provider's real
+		// prompt-token count for the request we just sent, so later turns trigger
+		// compaction near true capacity instead of ~15% early on code-heavy history.
+		// Recompute the estimate HERE (not at request-build time): a reactive
+		// compaction may have replaced `messages` with a smaller set and re-sent, so
+		// this reflects the request that actually produced collected.Usage. The
+		// assistant reply is appended below, after this, so `messages` is still the
+		// sent request.
+		compactor.calibrate(estimateTokens(messages)+estimateToolDefTokens(exposed), collected.Usage.InputTokens)
 
 		// Carry the turn's terminal stop reason so a final answer cut off at the
 		// output token cap (or by a content filter) is reported as truncated. A
@@ -2462,6 +2482,17 @@ func permissionActionFromSandbox(action sandbox.Action) PermissionAction {
 // exposed. The exposed slice is alpha-sorted by name, matching the legacy order
 // so the inactive path is stable.
 func partitionTools(registry *tools.Registry, permissionMode PermissionMode, options Options, loaded map[string]bool) ([]zeroruntime.ToolDefinition, string) {
+	return partitionToolsCached(registry, permissionMode, options, loaded, nil)
+}
+
+// partitionToolsCached is partitionTools with an optional per-tool definition
+// cache. The partitioning itself (visibility, deferral, ordering) is recomputed
+// every call — it must be, because a tool's deferred state can flip mid-run (e.g.
+// swarm tools un-defer once a swarm is active). Only the expensive part —
+// rendering each tool's JSON-schema parameters — is memoized by tool name, since a
+// tool's advertised name/description/schema is stable for the run. defCache nil
+// disables caching (used by tests and the plain partitionTools entrypoint).
+func partitionToolsCached(registry *tools.Registry, permissionMode PermissionMode, options Options, loaded map[string]bool, defCache map[string]zeroruntime.ToolDefinition) ([]zeroruntime.ToolDefinition, string) {
 	registeredTools := registry.All()
 
 	visible := make([]tools.Tool, 0, len(registeredTools))
@@ -2505,7 +2536,7 @@ func partitionTools(registry *tools.Registry, permissionMode PermissionMode, opt
 			if tool.Name() == tools.ToolSearchToolName {
 				continue
 			}
-			definitions = append(definitions, runtimeToolDefinition(tool))
+			definitions = append(definitions, cachedRuntimeToolDefinition(defCache, tool))
 		}
 		sort.Slice(definitions, func(left int, right int) bool {
 			return definitions[left].Name < definitions[right].Name
@@ -2537,13 +2568,13 @@ func partitionTools(registry *tools.Registry, permissionMode PermissionMode, opt
 		}
 		if tools.IsDeferred(tool) {
 			if loaded[name] {
-				loadedTail = append(loadedTail, runtimeToolDefinition(tool))
+				loadedTail = append(loadedTail, cachedRuntimeToolDefinition(defCache, tool))
 			} else {
 				hiddenTools = append(hiddenTools, tool)
 			}
 			continue
 		}
-		eager = append(eager, runtimeToolDefinition(tool))
+		eager = append(eager, cachedRuntimeToolDefinition(defCache, tool))
 	}
 	sort.Slice(eager, func(left int, right int) bool {
 		return eager[left].Name < eager[right].Name
@@ -2575,6 +2606,24 @@ func partitionTools(registry *tools.Registry, permissionMode PermissionMode, opt
 	definitions = append(definitions, loadedTail...)
 
 	return definitions, discovery
+}
+
+// cachedRuntimeToolDefinition returns the tool's rendered definition, reusing a
+// cached render when defCache holds one for this tool name. A tool's advertised
+// definition is stable across a run, so caching skips the recursive schema→map
+// conversion (schemaToRuntimeMap) that would otherwise run for every tool on every
+// turn. tool_search is excluded by its callers (its description is dynamic), so it
+// never poisons the cache. A nil cache computes fresh.
+func cachedRuntimeToolDefinition(defCache map[string]zeroruntime.ToolDefinition, tool tools.Tool) zeroruntime.ToolDefinition {
+	if defCache == nil {
+		return runtimeToolDefinition(tool)
+	}
+	if def, ok := defCache[tool.Name()]; ok {
+		return def
+	}
+	def := runtimeToolDefinition(tool)
+	defCache[tool.Name()] = def
+	return def
 }
 
 // runtimeToolDefinition renders a tool's advertised definition (name, description,

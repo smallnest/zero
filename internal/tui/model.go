@@ -19,6 +19,7 @@ import (
 	"github.com/Gitlawb/zero/internal/agent"
 	"github.com/Gitlawb/zero/internal/config"
 	"github.com/Gitlawb/zero/internal/doctor"
+	"github.com/Gitlawb/zero/internal/errhint"
 	"github.com/Gitlawb/zero/internal/lsp"
 	internalmcp "github.com/Gitlawb/zero/internal/mcp"
 	"github.com/Gitlawb/zero/internal/modelregistry"
@@ -76,24 +77,29 @@ type model struct {
 	discoverProviderModels      func(context.Context, config.ProviderProfile) ([]providermodeldiscovery.Model, error)
 	discoverOllamaContextWindow func(ctx context.Context, baseURL string, model string) (int, error)
 	registry                    *tools.Registry
-	sessionStore                *sessions.Store
-	sandboxStore                *sandbox.GrantStore
-	mcpConfig                   config.MCPConfig
-	mcpPermissionStore          *internalmcp.PermissionStore
-	mcpTokenStore               *internalmcp.TokenStore
-	mcpCommand                  func(context.Context, []string) MCPCommandResult
-	sandboxSetupCommand         func(context.Context) SandboxSetupCommandResult
-	mcpViewStateCache           MCPViewState
-	mcpViewStateReady           bool
-	mcpCommandSeq               int
-	mcpCommandCancel            context.CancelFunc
-	sandboxSetupSeq             int
-	sandboxSetupInFlight        bool
-	doctorCommandSeq            int
-	doctorInFlight              bool
-	doctorFrame                 int
-	activeSession               sessions.Metadata
-	sessionEvents               []sessions.Event
+	// lspManager is created once per session and reused across prompts so gopls (and
+	// other language servers) stay warm — a fresh manager per run would cold-start
+	// the server on the first edit of every turn. Nil when cwd is unknown; runs then
+	// fall back to a per-run manager. Torn down in quit().
+	lspManager           *lsp.Manager
+	sessionStore         *sessions.Store
+	sandboxStore         *sandbox.GrantStore
+	mcpConfig            config.MCPConfig
+	mcpPermissionStore   *internalmcp.PermissionStore
+	mcpTokenStore        *internalmcp.TokenStore
+	mcpCommand           func(context.Context, []string) MCPCommandResult
+	sandboxSetupCommand  func(context.Context) SandboxSetupCommandResult
+	mcpViewStateCache    MCPViewState
+	mcpViewStateReady    bool
+	mcpCommandSeq        int
+	mcpCommandCancel     context.CancelFunc
+	sandboxSetupSeq      int
+	sandboxSetupInFlight bool
+	doctorCommandSeq     int
+	doctorInFlight       bool
+	doctorFrame          int
+	activeSession        sessions.Metadata
+	sessionEvents        []sessions.Event
 	// titledSessions records session ids for which a model-generated title has
 	// already been attempted this process, so a finished turn re-fires the title
 	// generator at most once per session (even before its async result lands).
@@ -261,13 +267,30 @@ type model struct {
 	headerPrinted bool
 
 	// Composer input history (shell-style ↑/↓ recall of submitted inputs).
+	// lastPrompt is the verbatim text of the most recent submitted prompt, so
+	// /retry can resend it and /edit can recall it into the composer.
+	lastPrompt string
+	// lastImages/lastImageLabels/lastDocuments remember the attachments consumed
+	// by the most recent submitted prompt. launchPrompt clears the pending queues
+	// once a turn is sent, so /retry re-stages these to reproduce the exact same
+	// request — otherwise a vision/PDF-backed prompt would silently retry as
+	// text-only and answer a different task. They share the underlying image bytes
+	// with the sent turn (never mutated in place), so no deep copy is needed.
+	lastImages      []zeroruntime.ImageBlock
+	lastImageLabels []string
+	lastDocuments   []pendingDocument
 	// historyIdx == len(inputHistory) means "not navigating"; historyDraft
 	// preserves whatever was typed before recall started.
 	inputHistory []string
 	historyIdx   int
 	historyDraft string
 
-	streamingText              string // live assistant text for the current segment
+	// streamingText is the live assistant text for the current segment, accumulated
+	// as []byte so each delta is an O(1) amortized append instead of the O(n²) that
+	// string += delta incurs across a long generation. Read via streamingTextString().
+	// A []byte (not strings.Builder) because the model is copied by value on every
+	// Update, which would trip strings.Builder's copy check.
+	streamingText              []byte
 	streamingReasoning         string // live provider reasoning for the current segment
 	streamingReasoningExpanded bool
 	// turnStreamedRunes accumulates every reasoning+answer rune streamed in the
@@ -773,6 +796,11 @@ func newModel(ctx context.Context, options Options) model {
 	// Streaming text always renders statically at base ink (the disabled path in
 	// styleStreamingLine), so no accent glow and no per-line fade ticks.
 	m.fadeDisabled = true
+	// One session-long LSP manager (cheap to build — servers start lazily on the
+	// first Check), reused across prompts so gopls stays warm between turns.
+	if cwd != "" {
+		m.lspManager = lsp.NewManager(cwd)
+	}
 	m.refreshMCPViewState()
 	return m
 }
@@ -902,7 +930,20 @@ func (m model) noBlockingModal() bool {
 func (m model) quit() (tea.Model, tea.Cmd) {
 	m.stopPRWatcher()
 	m.stopAllBackgroundTerminalSessions()
+	m.shutdownLSPManager()
 	return m, tea.Quit
+}
+
+// shutdownLSPManager gracefully stops the session-long language servers on exit.
+// Best-effort with a short deadline so a slow server can't hang the quit; the
+// servers are our child processes and would be reaped on exit regardless.
+func (m model) shutdownLSPManager() {
+	if m.lspManager == nil {
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = m.lspManager.Shutdown(shutdownCtx)
 }
 
 func (m model) handleCtrlC() (tea.Model, tea.Cmd) {
@@ -1576,7 +1617,7 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Streaming text means any in-progress tool call has finished — clear the
 		// live "writing" block so it doesn't linger over new prose.
 		m.clearStreamingToolCall()
-		m.streamingText += msg.delta
+		m.streamingText = append(m.streamingText, msg.delta...)
 		m.turnStreamedRunes += utf8.RuneCountInString(msg.delta)
 		// recordStreamingDelta appends a time.Time to lineAges for every
 		// newline in the delta and bumps lastStreamActivity. It also
@@ -1859,20 +1900,23 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if row, ok := reasoningTranscriptRow("", msg.runID, m.streamingReasoning); ok {
 				m.transcript = appendTranscriptRow(m.transcript, row)
 			}
-			if text := strings.TrimRight(m.streamingText, "\n"); strings.TrimSpace(text) != "" {
+			if text := strings.TrimRight(m.streamingTextString(), "\n"); strings.TrimSpace(text) != "" {
 				m.transcript = appendTranscriptRow(m.transcript, transcriptRow{kind: rowAssistant, text: text})
 			}
 			// The error row terminates the turn, so it carries the done-line
-			// metadata a final assistant row would have carried.
+			// metadata a final assistant row would have carried. A recognized
+			// provider failure (auth/rate-limit/connectivity/…) also carries a
+			// one-line next step so the user isn't left staring at a raw blob.
 			m.transcript = appendTranscriptRow(m.transcript, transcriptRow{
 				kind:        rowError,
 				text:        msg.err.Error(),
+				hint:        errhint.TUIHint(msg.err),
 				final:       true,
 				turnTools:   msg.turnTools,
 				turnElapsed: msg.turnElapsed,
 			})
 		}
-		m.streamingText = ""
+		m.streamingText = nil
 		m.streamingReasoning = ""
 		m.streamingReasoningExpanded = false
 		// Roll the completed run's wall-time into the session's rolling average so
@@ -2047,14 +2091,14 @@ func (m model) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamingReasoning = ""
 				m.streamingReasoningExpanded = false
 			}
-			if text := strings.TrimRight(m.streamingText, "\n"); strings.TrimSpace(text) != "" {
+			if text := strings.TrimRight(m.streamingTextString(), "\n"); strings.TrimSpace(text) != "" {
 				m.transcript = appendTranscriptRow(m.transcript, transcriptRow{kind: rowAssistant, text: text})
 				// This interim narration is the agent explaining what it's about to
 				// do — attribute it to the active plan step so the step-detail card
 				// can replay the agent's own account of the work.
 				m = m.captureStepNarration(text)
 			}
-			m.streamingText = ""
+			m.streamingText = nil
 			// The tool call has finalized into its card — drop the live "writing"
 			// preview so it doesn't linger or duplicate beneath the card.
 			m.clearStreamingToolCall()
@@ -2785,7 +2829,7 @@ func (m model) liveReasoningBodyCap() int {
 }
 
 func (m model) interimBlock(width int) string {
-	text := strings.TrimRight(m.streamingText, "\n")
+	text := strings.TrimRight(m.streamingTextString(), "\n")
 	reasoning := strings.TrimRight(m.streamingReasoning, "\n")
 	blocks := []string{}
 	if strings.TrimSpace(reasoning) != "" {
@@ -2849,7 +2893,7 @@ func (m model) spinnerGlyph() string {
 // (reasoning, waiting on the model, or a tool in flight). Cheap and robust — no
 // transcript scan — so it can't misreport on a long, output-less step.
 func (m model) workingActivity() string {
-	if strings.TrimSpace(m.streamingText) != "" {
+	if strings.TrimSpace(m.streamingTextString()) != "" {
 		return "writing"
 	}
 	return "thinking"
@@ -3897,6 +3941,62 @@ func (m model) handleSubmit() (tea.Model, tea.Cmd) {
 		}
 		m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: "$ " + cmdText})
 		return m, runBashEscape(m.cwd, cmdText)
+	case commandRetry:
+		// /retry launches a run, so it needs the same guards a normal prompt gets:
+		// never start one while exiting (would strand the shutdown flush) or during
+		// compaction (would race compactResultMsg's wholesale rewrite of
+		// transcript/sessionEvents and silently drop events).
+		if m.exiting {
+			return m, nil
+		}
+		if m.pending {
+			m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: "Retry\ncannot retry while a run is in progress."})
+			return m, nil
+		}
+		if m.compactInFlight {
+			m.transcript = reduceTranscript(m.transcript, transcriptAction{
+				kind: actionAppendSystem,
+				text: "Retry\nstatus: warning\nCompaction is running. Retry once it finishes.",
+			})
+			return m, nil
+		}
+		if strings.TrimSpace(m.lastPrompt) == "" {
+			m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: "Retry\nno previous prompt to resend."})
+			return m, nil
+		}
+		// Re-stage the attachments the last prompt carried so launchPrompt rebuilds
+		// an identical request (document preamble + images + vision re-check). Without
+		// this the queues are empty and /retry would resend a text-only prompt,
+		// silently dropping the image/PDF context and answering a different task.
+		m.pendingImages = m.lastImages
+		m.pendingImageLabels = m.lastImageLabels
+		m.pendingDocuments = m.lastDocuments
+		return m.launchPrompt(m.lastPrompt)
+	case commandEdit:
+		if strings.TrimSpace(m.lastPrompt) == "" {
+			m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: "Edit\nno previous prompt to recall."})
+			return m, nil
+		}
+		// Re-stage the remembered attachments alongside the recalled text so an
+		// edited resend carries the same image/PDF context — the reappearing chip
+		// row is the visible confirmation. Without this, editing a vision- or
+		// document-backed prompt would silently submit a text-only version and
+		// answer a different task (the same gap /retry guards against).
+		m.pendingImages = m.lastImages
+		m.pendingImageLabels = m.lastImageLabels
+		m.pendingDocuments = m.lastDocuments
+		m.input.SetValue(m.lastPrompt)
+		return m, nil
+	case commandCopy:
+		text := m.lastAssistantAnswer()
+		if strings.TrimSpace(text) == "" {
+			m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: "Copy\nno answer to copy yet."})
+			return m, nil
+		}
+		return m, copyTranscriptSelectionCmd(text)
+	case commandExport:
+		m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: m.handleExportCommand(command.text)})
+		return m, nil
 	case commandPrompt:
 		if intent, ok := detectMCPSetupIntent(command.text); ok {
 			return m.openMCPAddWizardFromIntent(intent), nil
@@ -3911,6 +4011,15 @@ func (m model) handleSubmit() (tea.Model, tea.Cmd) {
 // composer. Queued prompts use this path too, so session and image behavior
 // stays identical to immediate submissions.
 func (m model) launchPrompt(prompt string) (model, tea.Cmd) {
+	// Remember the verbatim prompt (before specialist/document expansion) so /retry
+	// and /edit can act on exactly what the user submitted. Snapshot the staged
+	// attachments too: launchPrompt clears the pending queues below, so /retry
+	// re-stages these to resend an identical vision/PDF-backed request rather than
+	// a degraded text-only one.
+	m.lastPrompt = prompt
+	m.lastImages = m.pendingImages
+	m.lastImageLabels = m.pendingImageLabels
+	m.lastDocuments = m.pendingDocuments
 	m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendUser, text: prompt})
 	if m.provider == nil {
 		m.transcript = reduceTranscript(m.transcript, transcriptAction{
@@ -4098,7 +4207,7 @@ func (m *model) cancelRun() {
 		if row, ok := reasoningTranscriptRow("", m.activeRunID, m.streamingReasoning); ok {
 			m.transcript = appendTranscriptRow(m.transcript, row)
 		}
-		if text := strings.TrimRight(m.streamingText, "\n"); strings.TrimSpace(text) != "" {
+		if text := strings.TrimRight(m.streamingTextString(), "\n"); strings.TrimSpace(text) != "" {
 			m.transcript = appendTranscriptRow(m.transcript, transcriptRow{kind: rowAssistant, text: text})
 		}
 		m.transcript = appendTranscriptRow(m.transcript, transcriptRow{kind: rowSystem, text: "Run cancelled."})
@@ -4119,7 +4228,7 @@ func (m *model) cancelRun() {
 	m.pendingAskUser = nil
 	// The interim block renders streamingText live; a cancelled run's partial
 	// answer must not leak into (and concatenate with) the next turn's stream.
-	m.streamingText = ""
+	m.streamingText = nil
 	m.streamingReasoning = ""
 	m.streamingReasoningExpanded = false
 	// Hard-stop the fade and drop the per-line age map. The next turn's
@@ -4196,12 +4305,18 @@ func (m model) runAgentWithOptions(runID int, runCtx context.Context, prompt str
 		// matching exec; the per-turn lsp.Manager is torn down when this run
 		// returns; auto-fix vs report-only follows the active permission mode.
 		if !runOptions.specDraft && options.Cwd != "" {
-			lspManager := lsp.NewManager(options.Cwd)
-			defer func() {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = lspManager.Shutdown(shutdownCtx)
-			}()
+			// Prefer the session-long manager (kept warm across prompts). Only when it
+			// is absent — e.g. cwd was unknown at construction, or a test built the
+			// model directly — fall back to a per-run manager that is shut down here.
+			lspManager := m.lspManager
+			if lspManager == nil {
+				lspManager = lsp.NewManager(options.Cwd)
+				defer func() {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = lspManager.Shutdown(shutdownCtx)
+				}()
+			}
 			options.SelfCorrect = agent.NewSelfCorrector(options.Cwd, agent.NewLSPDiagnosticsChecker(lspManager), agent.NewProjectVerifier(options.Cwd), agent.SelfCorrectConfig{
 				Enabled:      true,
 				IncludeTests: m.selfCorrectTests,
@@ -4657,6 +4772,13 @@ func (m model) sendAgentText(runID int, delta string) {
 		return
 	}
 	m.runtimeMessageSink(agentTextMsg{runID: runID, delta: delta})
+}
+
+// streamingTextString returns the accumulated live assistant text. streamingText
+// is stored as []byte for O(1) amortized appends; the conversion here is bounded
+// by the segment length, the same cost the renderer already pays.
+func (m model) streamingTextString() string {
+	return string(m.streamingText)
 }
 
 func (m model) sendToolCallStreamStart(runID int, id, name string) {
