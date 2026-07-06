@@ -31,15 +31,24 @@ dependencies (only the installing project's own scripts), so the `postinstall`
 that fetches the Zero binary is silently skipped. The first run then fails with
 `No native binary found next to the npm wrapper`.
 
-To install with Bun, either run the installer manually after installing:
+The simplest fix is to trust the package after installing, which runs the
+blocked postinstall. This works for project and global installs:
 
 ```bash
+# project install
 bun add @gitlawb/zero
-node node_modules/@gitlawb/zero/scripts/postinstall.mjs
+bun pm trust @gitlawb/zero
+
+# global install
+bun add -g @gitlawb/zero
+bun pm -g trust @gitlawb/zero
 ```
 
-Or allow the postinstall to run by adding the package to your project's
-`trustedDependencies` before installing:
+`bun pm untrusted` (or `bun pm -g untrusted`) lists the blocked postinstalls if
+you want to inspect before trusting.
+
+Alternatively, allow the postinstall to run at install time by adding the
+package to your project's `trustedDependencies` before installing:
 
 ```json
 {
@@ -51,8 +60,12 @@ Or allow the postinstall to run by adding the package to your project's
 bun add @gitlawb/zero
 ```
 
-For global installs (`bun add -g @gitlawb/zero`), run the installer manually
-against the global install path, or use the install scripts below.
+On Bun versions that do not have `bun pm trust`, run the installer manually
+after installing:
+
+```bash
+node node_modules/@gitlawb/zero/scripts/postinstall.mjs
+```
 
 Reference: <https://bun.sh/docs/pm/lifecycle>
 
@@ -159,6 +172,61 @@ helper applies the Unix-socket filter itself when that sandbox option is enabled
 Linux native sandboxing also requires Bubblewrap to be installed.
 
 macOS uses the system sandbox and does not need an extra helper binary.
+
+### Termux (Android)
+
+Zero can run natively on Android via [Termux](https://termux.dev/). Build with
+`GOOS=android` to avoid the `faccessat2` syscall that is blocked by Samsung's
+seccomp filter on Android:
+
+```bash
+# Install Go in Termux
+pkg install golang
+
+# Build Zero for Android
+git clone https://github.com/Gitlawb/zero.git
+cd zero
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o zero ./cmd/zero
+
+# Move into PATH
+mv zero ~/.local/bin/
+```
+
+> **Why `GOOS=android`?** Go 1.26+ detects `runtime.GOOS == "android"` and skips
+> the `faccessat2` syscall inside `os/exec.findExecutable`, falling back to
+> permission-bit checks. Without this flag, Android's seccomp sends SIGSYS and
+> kills the process whenever Zero looks up a binary on `PATH` (git, sh, etc.).
+
+**DNS.** Android does not expose `/etc/resolv.conf`. Go's pure-Go DNS resolver
+needs one. Use `proot` to bind-mount Termux's resolver config:
+
+```bash
+pkg install proot
+proot -b "$PREFIX/etc/resolv.conf:/etc/resolv.conf" zero
+```
+
+Create a wrapper at `~/.local/bin/zero` to avoid typing proot every time:
+
+```bash
+#!/data/data/com.termux/files/usr/bin/bash
+exec proot -b "$PREFIX/etc/resolv.conf:/etc/resolv.conf" ~/.local/bin/zero.bin "$@"
+```
+
+**Scroll.** On native Termux (not under PRoot), mouse scrolling works out of the
+box. The TUI uses Bubble Tea's `AllMotion` mouse mode by default. If you run Zero
+inside PRoot (e.g. through proot-distro), the scroll fix activates `CellMotion`
+to avoid PRoot's ptrace interference with the 1003 escape sequence.
+
+**Providers.** Zero works with any OpenAI-compatible provider on Termux. For
+example, to use OpenCode Zen's free tier:
+
+```bash
+zero providers add opencode \
+  --name opencode \
+  --model deepseek-v4-flash-free \
+  --base-url https://opencode.ai/zen/v1 \
+  --set-active
+```
 
 Windows source builds can use the main `zero.exe` as the command runner and setup
 helper through Zero's built-in self-dispatch path. If you want a release-style

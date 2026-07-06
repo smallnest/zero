@@ -25,7 +25,12 @@ const maxTurnsFinalAnswerPrompt = "You have reached the tool-turn limit. Do not 
 // WITH NO OUTPUT yet is re-issued on a fresh connection before giving up. Only
 // the no-output case is retried (a partial turn would duplicate), so this is a
 // safe recovery for a stalled/dead pooled connection.
-const maxStreamStallRetries = 2
+//
+// Set to 1 (not 2): each attempt can itself idle for the full stream timeout
+// (~5min) before the stall is even detected, so 2 retries left an interactive
+// session frozen for ~15min. One retry keeps the common single-hiccup recovery
+// while bounding the worst case to ~2× the idle timeout.
+const maxStreamStallRetries = 1
 
 const (
 	toolResultMetaControl       = "control"
@@ -132,6 +137,12 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 	guards := newGuardState()
 	compactor := newCompactionState(options)
 
+	// Background post-edit diagnostics: files changed by mutating tools are
+	// checked off the tool-call critical path and any errors are appended as a
+	// nudge before the NEXT request (see async_diagnostics.go). nil when no
+	// FileDiagnostics callback is wired; every method no-ops on nil.
+	postEditDiagnostics := newAsyncDiagnostics(options.FileDiagnostics, options.Cwd)
+
 	// loaded tracks deferred-eligible tools the model has pulled via tool_search
 	// during THIS run. It is consulted by partitionTools each turn to expose a
 	// loaded tool's full schema; it lives only for the run (v1 within-run scope).
@@ -145,15 +156,31 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 	// has already been demanded this run, so it fires at most once.
 	acceptanceRequested := false
 
+	// toolDefCache memoizes each tool's rendered JSON-schema definition across
+	// turns (a tool's advertised schema is stable for the run), so partitionTools
+	// doesn't re-run the recursive schema→map conversion for every tool every turn.
+	toolDefCache := map[string]zeroruntime.ToolDefinition{}
+
 	result := Result{Messages: copyMessages(messages)}
 	for turn := 0; turn < maxTurns; turn++ {
 		result.Turns = turn + 1
+
+		// Deliver background post-edit diagnostics from the previous turn's edits
+		// BEFORE compaction so the nudge is part of the request being budgeted.
+		// A brief wait at most (asyncDiagnosticsDrainTimeout); an unfinished check
+		// simply delivers on a later turn.
+		if nudge := postEditDiagnostics.drain(ctx); nudge != "" {
+			messages = append(messages, zeroruntime.Message{
+				Role:    zeroruntime.MessageRoleUser,
+				Content: nudge,
+			})
+		}
 
 		// Build the per-turn tool list first so proactive compaction can include
 		// the tool-definition tokens (they ride on every request) in its estimate.
 		// partitionTools depends only on registry/permissions/options/loaded, not on
 		// the messages, so computing it before compaction is safe.
-		exposed, _ := partitionTools(registry, permissionMode, options, loaded)
+		exposed, _ := partitionToolsCached(registry, permissionMode, options, loaded, toolDefCache)
 
 		// PROACTIVE compaction: if the history is approaching the model's
 		// context window, summarize the oldest middle before building the
@@ -163,6 +190,7 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 			Messages:        copyMessages(messages),
 			Tools:           exposed,
 			ReasoningEffort: options.ReasoningEffort,
+			PromptCacheKey:  options.SessionID,
 		}
 
 		// Report the per-category context budget for this turn so a surface can
@@ -198,6 +226,7 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 					Messages:        copyMessages(messages),
 					Tools:           exposed,
 					ReasoningEffort: options.ReasoningEffort,
+					PromptCacheKey:  options.SessionID,
 				}
 				// Pre-content connect after a context-limit compaction: route through the
 				// reconnect helper so a transient upstream hiccup here doesn't fail the
@@ -258,6 +287,7 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 					Messages:        copyMessages(messages),
 					Tools:           exposed,
 					ReasoningEffort: options.ReasoningEffort,
+					PromptCacheKey:  options.SessionID,
 				}
 				retryStream, retryStreamErr := streamWithReconnect(ctx, provider, retryRequest, reconnectNoticeFor(options))
 				if retryStreamErr != nil {
@@ -316,6 +346,7 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 				Messages:        copyMessages(messages),
 				Tools:           exposed,
 				ReasoningEffort: options.ReasoningEffort,
+				PromptCacheKey:  options.SessionID,
 			}
 			retryStream, retryErr := streamWithReconnect(ctx, provider, retryRequest, reconnectNoticeFor(options))
 			if retryErr != nil {
@@ -339,6 +370,16 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 				return result, errors.New(collected.Error)
 			}
 		}
+
+		// Calibrate the compaction token estimator against the provider's real
+		// prompt-token count for the request we just sent, so later turns trigger
+		// compaction near true capacity instead of ~15% early on code-heavy history.
+		// Recompute the estimate HERE (not at request-build time): a reactive
+		// compaction may have replaced `messages` with a smaller set and re-sent, so
+		// this reflects the request that actually produced collected.Usage. The
+		// assistant reply is appended below, after this, so `messages` is still the
+		// sent request.
+		compactor.calibrate(estimateTokens(messages)+estimateToolDefTokens(exposed), collected.Usage.InputTokens)
 
 		// Carry the turn's terminal stop reason so a final answer cut off at the
 		// output token cap (or by a content filter) is reported as truncated. A
@@ -450,6 +491,19 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 					continue
 				}
 			}
+			// Finalization diagnostics gate: edits from this run may still have
+			// checks in flight — the per-turn drain waits only briefly and defers
+			// to "a later turn", but a final answer means there is no later turn.
+			// Wait out the full inline-era budget once; an introduced error gives
+			// the model one more turn to see (and fix) it instead of being lost.
+			// Free for runs that never edited: an idle collector returns "".
+			if nudge := postEditDiagnostics.drainFinal(ctx); nudge != "" {
+				messages = append(messages, zeroruntime.Message{
+					Role:    zeroruntime.MessageRoleUser,
+					Content: nudge,
+				})
+				continue
+			}
 			result.FinalAnswer = collected.Text
 			result.Messages = copyMessages(messages)
 			return result, nil
@@ -475,11 +529,35 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 		// between tool_results breaks strict provider replay) — same after-batch
 		// rationale as turnRequestedModel above.
 		var changedFilesThisBatch []string
+		// Parallel read-ahead state: results for calls[precomputedStart:precomputedEnd]
+		// executed concurrently, consumed strictly in order below.
+		var precomputed []precomputedToolResult
+		precomputedStart, precomputedEnd := 0, 0
 		for index, call := range collected.ToolCalls {
+			// When this call starts a consecutive run of >= 2 auto-allowed read-only
+			// calls, execute the whole run concurrently now (see parallel_tools.go).
+			// The scan happens lazily at the run's first index — never ahead of a
+			// pending mutating call — so read-after-write ordering is preserved.
+			if index >= precomputedEnd {
+				runEnd := index
+				for runEnd < len(collected.ToolCalls) && parallelSafeToolCall(registry, collected.ToolCalls[runEnd], options) {
+					runEnd++
+				}
+				if runEnd-index >= 2 {
+					precomputed = executeParallelReadBatch(ctx, registry, collected.ToolCalls, index, runEnd, permissionMode, options)
+					precomputedStart, precomputedEnd = index, runEnd
+				}
+			}
 			if options.OnToolCall != nil {
 				options.OnToolCall(call)
 			}
-			toolResult, abortErr := executeToolCall(ctx, registry, call, permissionMode, options)
+			var toolResult ToolResult
+			var abortErr error
+			if index >= precomputedStart && index < precomputedEnd {
+				toolResult, abortErr = precomputed[index-precomputedStart].result, precomputed[index-precomputedStart].abortErr
+			} else {
+				toolResult, abortErr = executeToolCall(ctx, registry, call, permissionMode, options)
+			}
 			if options.OnToolResult != nil {
 				options.OnToolResult(toolResult)
 			}
@@ -542,11 +620,14 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 				failureHint = toolFailureHint(call.Name, toolSchemaJSON(registry, call.Name), toolResult.Output)
 			}
 
-			// Post-edit self-correction: collect the files this successful mutating
-			// tool changed; verification runs once over the union after the batch.
-			// A read-only tool (no ChangedFiles) never contributes.
-			if options.SelfCorrect != nil && toolResult.Status == tools.StatusOK && len(toolResult.ChangedFiles) > 0 {
+			// Collect the files this successful mutating tool changed. Self-correct
+			// verification runs once over the union after the batch; background
+			// diagnostics start NOW so the language server analyzes while the rest
+			// of the batch executes. A read-only tool (no ChangedFiles) never
+			// contributes.
+			if toolResult.Status == tools.StatusOK && len(toolResult.ChangedFiles) > 0 {
 				changedFilesThisBatch = append(changedFilesThisBatch, toolResult.ChangedFiles...)
+				postEditDiagnostics.enqueue(ctx, toolResult.ChangedFiles)
 			}
 		}
 
@@ -629,6 +710,17 @@ func Run(ctx context.Context, prompt string, provider Provider, options Options)
 	// mid-run, not a natural completion (a finished run returns via the no-tool-call
 	// success path before this). Under the headless completion gate that is INCOMPLETE,
 	// not success, so a run that loops to the turn limit isn't reported as done.
+	//
+	// The final-answer call is one more model request, so diagnostics from the
+	// LAST turn's edits get a drain too — with the finalization budget, since
+	// there is no later turn to defer to — otherwise an error introduced by
+	// the final edit would go unreported in the summary.
+	if nudge := postEditDiagnostics.drainFinal(ctx); nudge != "" {
+		messages = append(messages, zeroruntime.Message{
+			Role:    zeroruntime.MessageRoleUser,
+			Content: nudge,
+		})
+	}
 	if answer, finalMessages, finishReason := finalAnswerAfterMaxTurns(ctx, provider, messages, options); strings.TrimSpace(answer) != "" {
 		result.FinalAnswer = answer
 		result.FinishReason = finishReason
@@ -661,6 +753,7 @@ func finalAnswerAfterMaxTurns(ctx context.Context, provider Provider, messages [
 	stream, err := streamWithReconnect(ctx, provider, zeroruntime.CompletionRequest{
 		Messages:        copyMessages(finalMessages),
 		ReasoningEffort: options.ReasoningEffort,
+		PromptCacheKey:  options.SessionID,
 	}, reconnectNoticeFor(options))
 	if err != nil {
 		return "", messages, ""
@@ -813,6 +906,25 @@ func executeToolCall(ctx context.Context, registry *tools.Registry, call ToolCal
 			if result, rejected := rejecter.RejectBeforePermission(args); rejected {
 				return toolResultFromPrePermissionReject(call, result), nil
 			}
+		}
+	}
+
+	// A shell command that sets sandbox_permissions: with_additional_permissions
+	// must carry a valid additional_permissions payload; inlineAdditionalPermissionsProfile
+	// is the single source of truth for that shape, and buildPermissionEvent (below)
+	// calls it again to render the prompt's scope text. Check it here, before any
+	// permission prompt is shown: a malformed payload can never be satisfied no
+	// matter what the user decides, so surfacing it as a plain tool error (which the
+	// model can see and retry) is both clearer and avoids presenting a normal-looking
+	// prompt whose "allow" path is guaranteed to fail with a confusing denial.
+	if toolFound && isShellCommandTool(call.Name) {
+		if _, _, err := inlineAdditionalPermissionsProfile(args, options.Cwd); err != nil {
+			return ToolResult{
+				ToolCallID: call.ID,
+				Name:       call.Name,
+				Status:     tools.StatusError,
+				Output:     "Error: " + err.Error(),
+			}, nil
 		}
 	}
 
@@ -1032,6 +1144,12 @@ func executeToolCall(ctx context.Context, registry *tools.Registry, call ToolCal
 		// Per-session file version tracker so write_file/edit_file refuse to clobber
 		// a file that changed on disk outside Zero since it was last read.
 		FileTracker: options.FileTracker,
+		// Post-edit diagnostics are NOT forwarded to the tools: they used to run
+		// synchronously inside edit_file/write_file and block every mutating tool
+		// call on the language server (≥300ms debounce floor, 10s cap). The loop
+		// now checks changed files in the background and nudges the model before
+		// its next request instead (see async_diagnostics.go). The tools' inline
+		// mechanism (tools.RunOptions.Diagnostics) stays for direct API callers.
 		// Forward the run's operator tool filters so a filter-aware tool
 		// (tool_search) never discloses or loads an operator-hidden deferred tool.
 		EnabledTools:  options.EnabledTools,
@@ -2322,7 +2440,12 @@ func inlineAdditionalPermissionsProfile(args map[string]any, basePath string) (s
 	}
 	raw, ok := args["additional_permissions"]
 	if !ok || raw == nil {
-		return sandbox.RequestPermissionProfile{}, true, fmt.Errorf("missing additional_permissions; provide at least one of network or file_system")
+		return sandbox.RequestPermissionProfile{}, true, fmt.Errorf(
+			"sandbox_permissions was set to %q but no additional_permissions object was provided. "+
+				`Include one, for example additional_permissions: {"network": {"enabled": true}} or `+
+				`{"file_system": {"write": ["/path"]}}. If this command does not need elevated permissions, `+
+				"omit sandbox_permissions entirely and retry",
+			tools.SandboxPermissionsWithAdditionalPermissions)
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
@@ -2337,7 +2460,9 @@ func inlineAdditionalPermissionsProfile(args map[string]any, basePath string) (s
 		return sandbox.RequestPermissionProfile{}, true, err
 	}
 	if normalized.Empty() {
-		return sandbox.RequestPermissionProfile{}, true, fmt.Errorf("additional_permissions must include at least one requested permission in network or file_system")
+		return sandbox.RequestPermissionProfile{}, true, fmt.Errorf(
+			"additional_permissions must include at least one of network or file_system, for example " +
+				`{"network": {"enabled": true}} or {"file_system": {"write": ["/path"]}}`)
 	}
 	grantProfile, err := sandbox.RequestPermissionGrantProfile(normalized)
 	if err != nil {
@@ -2436,6 +2561,17 @@ func permissionActionFromSandbox(action sandbox.Action) PermissionAction {
 // exposed. The exposed slice is alpha-sorted by name, matching the legacy order
 // so the inactive path is stable.
 func partitionTools(registry *tools.Registry, permissionMode PermissionMode, options Options, loaded map[string]bool) ([]zeroruntime.ToolDefinition, string) {
+	return partitionToolsCached(registry, permissionMode, options, loaded, nil)
+}
+
+// partitionToolsCached is partitionTools with an optional per-tool definition
+// cache. The partitioning itself (visibility, deferral, ordering) is recomputed
+// every call — it must be, because a tool's deferred state can flip mid-run (e.g.
+// swarm tools un-defer once a swarm is active). Only the expensive part —
+// rendering each tool's JSON-schema parameters — is memoized by tool name, since a
+// tool's advertised name/description/schema is stable for the run. defCache nil
+// disables caching (used by tests and the plain partitionTools entrypoint).
+func partitionToolsCached(registry *tools.Registry, permissionMode PermissionMode, options Options, loaded map[string]bool, defCache map[string]zeroruntime.ToolDefinition) ([]zeroruntime.ToolDefinition, string) {
 	registeredTools := registry.All()
 
 	visible := make([]tools.Tool, 0, len(registeredTools))
@@ -2470,74 +2606,113 @@ func partitionTools(registry *tools.Registry, permissionMode PermissionMode, opt
 
 	active := options.DeferThreshold > 0 && eligible >= options.DeferThreshold && loaderUsable
 
-	definitions := make([]zeroruntime.ToolDefinition, 0, len(visible))
-	exposedNames := make(map[string]bool, len(visible))
+	// INACTIVE: every visible tool eager (except tool_search), alpha-sorted. With no
+	// deferral there is no mid-session loading, so this is byte-stable across turns
+	// and byte-identical to the pre-deferral output.
+	if !active {
+		definitions := make([]zeroruntime.ToolDefinition, 0, len(visible))
+		for _, tool := range visible {
+			if tool.Name() == tools.ToolSearchToolName {
+				continue
+			}
+			definitions = append(definitions, cachedRuntimeToolDefinition(defCache, tool))
+		}
+		sort.Slice(definitions, func(left int, right int) bool {
+			return definitions[left].Name < definitions[right].Name
+		})
+		return definitions, ""
+	}
+
+	// ACTIVE: lay the tools array out so its cacheable prefix does NOT shift when a
+	// deferred tool loads mid-session. The tools block is part of the provider's
+	// cached prefix; if a load reorders it, the cache invalidates from that point
+	// through the system prompt and messages — on EVERY load. Previously the whole
+	// array was alpha-sorted each turn, so a newly loaded tool was INSERTED into the
+	// middle and shifted every later definition. Instead we build three append-only
+	// regions:
+	//   1. non-deferred tools, alpha-sorted — always present, identical every turn;
+	//   2. tool_search — always present, right after the stable block;
+	//   3. loaded deferred tools, alpha-sorted — APPENDED, so an unloaded->loaded
+	//      transition grows the tail instead of inserting into the eager block.
+	// (tool_search's discovery text still shrinks as tools load, so keeping it and
+	// the loaded tail AFTER the eager block preserves the eager tools' cache across a
+	// load; fully stabilizing the loader's own description is a scoped follow-up.)
+	eager := make([]zeroruntime.ToolDefinition, 0, len(visible))
+	loadedTail := make([]zeroruntime.ToolDefinition, 0)
 	var hiddenTools []tools.Tool
 	for _, tool := range visible {
 		name := tool.Name()
-		deferred := tools.IsDeferred(tool)
-
-		if !active {
-			// Inactive: byte-identical to legacy, but tool_search is never advertised.
-			if name == tools.ToolSearchToolName {
-				continue
+		if name == tools.ToolSearchToolName {
+			continue // added explicitly between the eager block and the loaded tail
+		}
+		if tools.IsDeferred(tool) {
+			if loaded[name] {
+				loadedTail = append(loadedTail, cachedRuntimeToolDefinition(defCache, tool))
+			} else {
+				hiddenTools = append(hiddenTools, tool)
 			}
-			definitions = append(definitions, zeroruntime.ToolDefinition{
-				Name:        name,
-				Description: tool.Description(),
-				Parameters:  schemaToRuntimeMap(tool.Parameters()),
-			})
-			exposedNames[name] = true
 			continue
 		}
-
-		// Active path.
-		if deferred && !loaded[name] {
-			hiddenTools = append(hiddenTools, tool)
-			continue
-		}
-		definitions = append(definitions, zeroruntime.ToolDefinition{
-			Name:        name,
-			Description: tool.Description(),
-			Parameters:  schemaToRuntimeMap(tool.Parameters()),
-		})
-		exposedNames[name] = true
+		eager = append(eager, cachedRuntimeToolDefinition(defCache, tool))
 	}
-
-	// On the ACTIVE path tool_search is guaranteed runnable (active implies
-	// loaderUsable), so it must ALWAYS be reachable — even when a non-empty
-	// EnabledTools allowlist omits it (the operator allowlisted the deferred
-	// tools, not the loader). Expose its full definition whenever it is not
-	// already in the exposed set. This never runs on the inactive path, so the
-	// byte-identical below-threshold output is preserved.
-	discovery := ""
-	if active && len(hiddenTools) > 0 {
-		discovery = tools.BuildToolSearchDescription(hiddenTools)
-	}
-	if active && !exposedNames[tools.ToolSearchToolName] {
-		description := loader.Description()
-		if discovery != "" {
-			description = discovery
-		}
-		definitions = append(definitions, zeroruntime.ToolDefinition{
-			Name:        loader.Name(),
-			Description: description,
-			Parameters:  schemaToRuntimeMap(loader.Parameters()),
-		})
-	} else if active && discovery != "" {
-		for i := range definitions {
-			if definitions[i].Name == tools.ToolSearchToolName {
-				definitions[i].Description = discovery
-				break
-			}
-		}
-	}
-
-	sort.Slice(definitions, func(left int, right int) bool {
-		return definitions[left].Name < definitions[right].Name
+	sort.Slice(eager, func(left int, right int) bool {
+		return eager[left].Name < eager[right].Name
+	})
+	sort.Slice(loadedTail, func(left int, right int) bool {
+		return loadedTail[left].Name < loadedTail[right].Name
 	})
 
+	discovery := ""
+	if len(hiddenTools) > 0 {
+		discovery = tools.BuildToolSearchDescription(hiddenTools)
+	}
+
+	// tool_search is guaranteed runnable on the active path, so it is ALWAYS exposed
+	// — even when a non-empty EnabledTools allowlist omits it (the operator
+	// allowlisted the deferred tools, not the loader). It sits right after the stable
+	// eager block and carries the discovery list for still-hidden tools.
+	description := loader.Description()
+	if discovery != "" {
+		description = discovery
+	}
+	definitions := make([]zeroruntime.ToolDefinition, 0, len(eager)+1+len(loadedTail))
+	definitions = append(definitions, eager...)
+	definitions = append(definitions, zeroruntime.ToolDefinition{
+		Name:        loader.Name(),
+		Description: description,
+		Parameters:  schemaToRuntimeMap(loader.Parameters()),
+	})
+	definitions = append(definitions, loadedTail...)
+
 	return definitions, discovery
+}
+
+// cachedRuntimeToolDefinition returns the tool's rendered definition, reusing a
+// cached render when defCache holds one for this tool name. A tool's advertised
+// definition is stable across a run, so caching skips the recursive schema→map
+// conversion (schemaToRuntimeMap) that would otherwise run for every tool on every
+// turn. tool_search is excluded by its callers (its description is dynamic), so it
+// never poisons the cache. A nil cache computes fresh.
+func cachedRuntimeToolDefinition(defCache map[string]zeroruntime.ToolDefinition, tool tools.Tool) zeroruntime.ToolDefinition {
+	if defCache == nil {
+		return runtimeToolDefinition(tool)
+	}
+	if def, ok := defCache[tool.Name()]; ok {
+		return def
+	}
+	def := runtimeToolDefinition(tool)
+	defCache[tool.Name()] = def
+	return def
+}
+
+// runtimeToolDefinition renders a tool's advertised definition (name, description,
+// JSON-schema parameters) as sent to the provider.
+func runtimeToolDefinition(tool tools.Tool) zeroruntime.ToolDefinition {
+	return zeroruntime.ToolDefinition{
+		Name:        tool.Name(),
+		Description: tool.Description(),
+		Parameters:  schemaToRuntimeMap(tool.Parameters()),
+	}
 }
 
 func ToolVisible(tool tools.Tool, permissionMode PermissionMode, enabledTools []string, disabledTools []string) bool {

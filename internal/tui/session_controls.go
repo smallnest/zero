@@ -326,8 +326,10 @@ func (m model) handleCompactCommand(args string) (model, string, tea.Cmd) {
 	if args == "status" {
 		return m, m.compactText(false), nil
 	}
-	if args != "" {
-		return m, "Compact\nusage: /compact [status]", nil
+	// Bare "/compact" already triggers compaction; accept "now" too since that is
+	// what users reach for when they see the context gauge climbing.
+	if args != "" && args != "now" {
+		return m, "Compact\nusage: /compact [status|now]", nil
 	}
 	if m.compactInFlight {
 		return m, m.compactText(true), nil
@@ -801,6 +803,25 @@ func (m model) usageSummaryText() string {
 		return usage.FormatSummary(summary)
 	}
 	return usage.FormatSummary(summary) + "; " + formatUnpricedUsage(m.unpricedRequests, m.unpricedTokens)
+}
+
+// cacheEfficiencyText reports the session's prompt-cache hit rate for /context so a
+// user can see whether cache reads are actually saving work. A low rate across
+// several turns usually means the cacheable prefix is churning (e.g. a tool list
+// that shifts mid-session), so it flags that case to make slowness diagnosable.
+func (m model) cacheEfficiencyText() string {
+	if m.usageTracker == nil {
+		return "usage unavailable"
+	}
+	summary := m.usageTracker.Summary()
+	if summary.InputTokens <= 0 {
+		return "n/a"
+	}
+	text := usage.FormatCacheEfficiency(summary)
+	if summary.RecordCount > 5 && summary.CacheHitRate() < 0.5 {
+		text += " — low; prefix may be unstable"
+	}
+	return text
 }
 
 func formatUnpricedUsage(requests int, tokens int) string {

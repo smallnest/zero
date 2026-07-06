@@ -41,6 +41,12 @@ const (
 	commandAddDir
 	commandSelfCorrect
 	commandTurns
+	commandRetry
+	commandEdit
+	commandCopy
+	commandExport
+	commandNew
+	commandSkills
 	commandUnknown
 )
 
@@ -127,6 +133,13 @@ var commandDefinitions = []commandDefinition{
 		kind:        commandTools,
 	},
 	{
+		name:        "/skills",
+		usage:       "/skills",
+		group:       commandGroupTools,
+		description: "List installed skills; run one directly with /<skill-name> [args].",
+		kind:        commandSkills,
+	},
+	{
 		name:        "/context",
 		usage:       "/context",
 		group:       commandGroupSession,
@@ -153,6 +166,13 @@ var commandDefinitions = []commandDefinition{
 		group:       commandGroupMeta,
 		description: "Clear the visible transcript.",
 		kind:        commandClear,
+	},
+	{
+		name:        "/new",
+		usage:       "/new",
+		group:       commandGroupSession,
+		description: "Start a fresh session; the current one stays resumable via /resume.",
+		kind:        commandNew,
 	},
 	{
 		name:        "/search",
@@ -201,9 +221,9 @@ var commandDefinitions = []commandDefinition{
 	},
 	{
 		name:        "/compact",
-		usage:       "/compact [status]",
+		usage:       "/compact [status|now]",
 		group:       commandGroupSession,
-		description: "Show or request transcript compaction state.",
+		description: "Compact the transcript now, or show compaction state (/compact status).",
 		kind:        commandCompact,
 	},
 	{
@@ -248,6 +268,34 @@ var commandDefinitions = []commandDefinition{
 		group:       commandGroupSession,
 		description: "Show or set the per-run tool-turn budget for this session (raise it for long multi-step tasks).",
 		kind:        commandTurns,
+	},
+	{
+		name:        "/retry",
+		usage:       "/retry",
+		group:       commandGroupSession,
+		description: "Resend your last prompt.",
+		kind:        commandRetry,
+	},
+	{
+		name:        "/edit",
+		usage:       "/edit",
+		group:       commandGroupSession,
+		description: "Recall your last prompt into the composer to edit and resend.",
+		kind:        commandEdit,
+	},
+	{
+		name:        "/copy",
+		usage:       "/copy",
+		group:       commandGroupSession,
+		description: "Copy the last answer to the clipboard.",
+		kind:        commandCopy,
+	},
+	{
+		name:        "/export",
+		usage:       "/export [path]",
+		group:       commandGroupSession,
+		description: "Write the conversation transcript to a file.",
+		kind:        commandExport,
 	},
 	{
 		name:        "/help",

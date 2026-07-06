@@ -662,3 +662,144 @@ func TestRunExecRejectsWorktreeDirWithoutWorktree(t *testing.T) {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
 	}
 }
+
+func TestParseChangesArgsAuto(t *testing.T) {
+	// 1. Correct parsing of auto
+	for _, args := range [][]string{
+		{"--auto"},
+		{"-a"},
+	} {
+		options, help, err := parseChangesArgs(args, "commit")
+		if err != nil {
+			t.Fatalf("parseChangesArgs(%v) error: %v", args, err)
+		}
+		if help {
+			t.Fatalf("parseChangesArgs(%v) returned help", args)
+		}
+		if !options.auto {
+			t.Fatalf("auto = false, want true (args %v)", args)
+		}
+	}
+
+	// 2. Reject --auto on inspect
+	_, _, err := parseChangesArgs([]string{"--auto"}, "inspect")
+	if err == nil || !strings.Contains(err.Error(), "--auto") {
+		t.Fatalf("expected --auto rejection on inspect, got %v", err)
+	}
+
+	// 3. Reject both --message and --auto on commit
+	_, _, err = parseChangesArgs([]string{"--message", "foo", "--auto"}, "commit")
+	if err == nil || !strings.Contains(err.Error(), "cannot specify both --message and --auto") {
+		t.Fatalf("expected --message and --auto conflict error, got %v", err)
+	}
+
+	// 4. Reject both empty message and --auto on commit
+	_, _, err = parseChangesArgs([]string{"--message=", "--auto"}, "commit")
+	if err == nil || !strings.Contains(err.Error(), "cannot specify both --message and --auto") {
+		t.Fatalf("expected empty --message and --auto conflict error, got %v", err)
+	}
+}
+
+type mockCommitMsgProvider struct {
+	response string
+	req      zeroruntime.CompletionRequest
+}
+
+func (p *mockCommitMsgProvider) StreamCompletion(ctx context.Context, request zeroruntime.CompletionRequest) (<-chan zeroruntime.StreamEvent, error) {
+	p.req = request
+	events := make(chan zeroruntime.StreamEvent, 2)
+	events <- zeroruntime.StreamEvent{Type: zeroruntime.StreamEventText, Content: p.response}
+	events <- zeroruntime.StreamEvent{Type: zeroruntime.StreamEventDone}
+	close(events)
+	return events, nil
+}
+
+func TestRunChangesCommitAuto(t *testing.T) {
+	cwd := t.TempDir()
+	summary := zerogit.ChangeSummary{
+		Root:   cwd,
+		Branch: "main",
+		Files:  []zerogit.FileChange{{Path: "README.md", Status: "modified"}},
+		Diff:   "some diff content with ghp_SECRETKEYHERE",
+	}
+
+	mockProv := &mockCommitMsgProvider{
+		response: "```\nfeat: auto commit message\n```",
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	commitCalled := false
+
+	exitCode := runWithDeps([]string{"changes", "commit", "--auto"}, &stdout, &stderr, appDeps{
+		getwd: func() (string, error) { return cwd, nil },
+		inspectChanges: func(ctx context.Context, options zerogit.InspectOptions) (zerogit.ChangeSummary, error) {
+			return summary, nil
+		},
+		resolveConfig: func(workspaceRoot string, overrides config.Overrides) (config.ResolvedConfig, error) {
+			cfg := execResolvedConfig()
+			cfg.Provider.Name = "openai"
+			cfg.Provider.Model = "gpt-4o"
+			return cfg, nil
+		},
+		newProvider: func(profile config.ProviderProfile) (zeroruntime.Provider, error) {
+			return mockProv, nil
+		},
+		commitChanges: func(ctx context.Context, options zerogit.CommitOptions) (zerogit.CommitResult, error) {
+			commitCalled = true
+			if options.Message != "feat: auto commit message" {
+				t.Fatalf("expected commit message 'feat: auto commit message', got %q", options.Message)
+			}
+			return zerogit.CommitResult{
+				Root:       cwd,
+				Message:    options.Message,
+				Committed:  true,
+				CommitHash: "abc1234",
+				Before:     summary,
+			}, nil
+		},
+	})
+
+	if exitCode != exitSuccess {
+		t.Fatalf("expected exit code %d, got %d: %s", exitSuccess, exitCode, stderr.String())
+	}
+	if !commitCalled {
+		t.Fatal("expected commitChanges to be called")
+	}
+	// Verify that secret in the diff was redacted
+	promptContent := mockProv.req.Messages[0].Content
+	if strings.Contains(promptContent, "ghp_SECRETKEYHERE") {
+		t.Fatal("expected secret in diff to be redacted, but it was found in the prompt")
+	}
+	if !strings.Contains(promptContent, "[REDACTED]") && !strings.Contains(promptContent, "REDACTED") {
+		t.Fatalf("expected redacted diff content in prompt, got: %q", promptContent)
+	}
+	if !strings.Contains(stdout.String(), "Generating commit message using LLM...") {
+		t.Fatalf("expected status message in stdout, got %q", stdout.String())
+	}
+
+	t.Run("EmptyLLMResponse", func(t *testing.T) {
+		mockProvEmpty := &mockCommitMsgProvider{
+			response: "   \n\n   ",
+		}
+		var stdout, stderr bytes.Buffer
+		code := runWithDeps([]string{"changes", "commit", "--auto"}, &stdout, &stderr, appDeps{
+			getwd: func() (string, error) { return cwd, nil },
+			inspectChanges: func(ctx context.Context, options zerogit.InspectOptions) (zerogit.ChangeSummary, error) {
+				return summary, nil
+			},
+			resolveConfig: func(workspaceRoot string, overrides config.Overrides) (config.ResolvedConfig, error) {
+				return execResolvedConfig(), nil
+			},
+			newProvider: func(profile config.ProviderProfile) (zeroruntime.Provider, error) {
+				return mockProvEmpty, nil
+			},
+		})
+		if code == exitSuccess {
+			t.Fatal("expected command to fail when LLM returns empty response, got success")
+		}
+		if !strings.Contains(stderr.String(), "empty commit message") {
+			t.Fatalf("expected empty commit message error in stderr, got %q", stderr.String())
+		}
+	})
+}

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Gitlawb/zero/internal/agent"
@@ -19,6 +20,7 @@ import (
 	"github.com/Gitlawb/zero/internal/hooks"
 	"github.com/Gitlawb/zero/internal/localcontrol"
 	"github.com/Gitlawb/zero/internal/mcp"
+	"github.com/Gitlawb/zero/internal/modelregistry"
 	"github.com/Gitlawb/zero/internal/observability"
 	"github.com/Gitlawb/zero/internal/plugins"
 	"github.com/Gitlawb/zero/internal/providerhealth"
@@ -77,9 +79,12 @@ type appDeps struct {
 	runAgentEval           func(context.Context, agentEvalOptions) (agentEvalReport, error)
 	inspectChanges         func(context.Context, zerogit.InspectOptions) (zerogit.ChangeSummary, error)
 	commitChanges          func(context.Context, zerogit.CommitOptions) (zerogit.CommitResult, error)
+	pushChanges            func(context.Context, zerogit.PushOptions) (zerogit.PushResult, error)
+	createPR               func(context.Context, zerogit.PROptions) (zerogit.PRResult, error)
 	runTUI                 func(context.Context, tui.Options) int
 	runEditor              func(string) error
 	checkUpdate            func(context.Context, update.Options) (update.Result, error)
+	applyUpdate            func(context.Context, update.Options) (update.ApplyResult, error)
 	now                    func() time.Time
 }
 
@@ -177,9 +182,12 @@ func defaultAppDeps() appDeps {
 		runAgentEval:     defaultRunAgentEval,
 		inspectChanges:   zerogit.Inspect,
 		commitChanges:    zerogit.Commit,
+		pushChanges:      zerogit.Push,
+		createPR:         zerogit.CreatePR,
 		runTUI:           tui.Run,
 		runEditor:        openEditor,
 		checkUpdate:      update.Check,
+		applyUpdate:      update.Apply,
 		now:              time.Now,
 	}
 }
@@ -226,6 +234,12 @@ func runWithDeps(args []string, stdout io.Writer, stderr io.Writer, deps appDeps
 	// a brief notice, rather than a raw stack trace dumped at the user.
 	defer observability.Recover(observability.DefaultCrashDir(), "cli", stderr, &exitCode)
 	deps = fillAppDeps(deps)
+
+	// CLI runs opt into the models.dev overlay (cached live context limits and
+	// pricing on top of the curated catalog). Explicitly enabled here — and only
+	// here — so library consumers and hermetic tests are never perturbed by a
+	// cache file on the machine. The refresh itself is fired in exec/TUI startup.
+	modelregistry.EnableModelsDevOverlay()
 
 	addDirs, args, err := splitLeadingAddDirFlags(args)
 	if err != nil {
@@ -383,6 +397,8 @@ func runWithDeps(args []string, stdout io.Writer, stderr io.Writer, deps appDeps
 		return runSandbox(args[1:], stdout, stderr, deps)
 	case "update":
 		return runUpdate(args[1:], stdout, stderr, deps)
+	case "upgrade":
+		return runUpgrade(args[1:], stdout, stderr, deps)
 	case "worktrees", "worktree":
 		return runWorktrees(args[1:], stdout, stderr, deps)
 	case "verify":
@@ -506,6 +522,12 @@ func fillAppDeps(deps appDeps) appDeps {
 	if deps.commitChanges == nil {
 		deps.commitChanges = defaults.commitChanges
 	}
+	if deps.pushChanges == nil {
+		deps.pushChanges = defaults.pushChanges
+	}
+	if deps.createPR == nil {
+		deps.createPR = defaults.createPR
+	}
 	if deps.runTUI == nil {
 		deps.runTUI = defaults.runTUI
 	}
@@ -514,6 +536,9 @@ func fillAppDeps(deps appDeps) appDeps {
 	}
 	if deps.checkUpdate == nil {
 		deps.checkUpdate = defaults.checkUpdate
+	}
+	if deps.applyUpdate == nil {
+		deps.applyUpdate = defaults.applyUpdate
 	}
 	if deps.now == nil {
 		deps.now = defaults.now
@@ -537,6 +562,11 @@ func runInteractiveTUI(stderr io.Writer, deps appDeps, permissionMode agent.Perm
 }
 
 func runInteractiveTUIWithSetup(stderr io.Writer, deps appDeps, permissionMode agent.PermissionMode, addDirs []string, theme string, forceSetup bool) int {
+	// Refresh the models.dev pricing/limits cache in the background when stale;
+	// the overlay is read at registry construction from the cache file, so this
+	// benefits the next run and never blocks or fails this one.
+	go func() { _ = modelregistry.RefreshModelsDevCache(context.Background()) }()
+
 	workspaceRoot, err := deps.getwd()
 	if err != nil {
 		return writeAppError(stderr, "failed to resolve workspace: "+err.Error(), 1)
@@ -557,8 +587,19 @@ func runInteractiveTUIWithSetup(stderr io.Writer, deps appDeps, permissionMode a
 		if !errors.Is(err, config.ErrNoActiveProvider) && !errors.Is(err, config.ErrProviderRequiresModel) {
 			return writeAppError(stderr, err.Error(), 1)
 		}
-		resolved = config.ResolvedConfig{}
-		forceSetup = true
+		// ErrNoActiveProvider can mean "nothing configured yet" (needs onboarding)
+		// or "providers ARE configured, just none marked active" (e.g. config.json's
+		// activeProvider is blank/stale). In the second case resolved.Providers still
+		// carries the already-normalized list — prefer falling back to one of those
+		// over wiping everything and forcing the user to re-enter credentials they
+		// already saved.
+		if usable, ok := firstUsableProvider(resolved.Providers); errors.Is(err, config.ErrNoActiveProvider) && ok {
+			resolved.Provider = usable
+			resolved.ActiveProvider = usable.Name
+		} else {
+			resolved = config.ResolvedConfig{}
+			forceSetup = true
+		}
 	}
 	userConfigPath, err := deps.userConfigPath()
 	if err != nil {
@@ -740,9 +781,19 @@ func runInteractiveTUIWithSetup(stderr io.Writer, deps appDeps, permissionMode a
 			Hooks:          newHookDispatcherWithExtra(workspaceRoot, pluginActivation.hooks),
 			DeferThreshold: resolved.Tools.DeferThreshold,
 			Specialists:    specialistRuntime.specialists,
+			Skills:         pluginActivation.skillInfos(deps.skillsDir()),
 		},
+		// LoadSkills backs /skills and direct /<skill-name> invocation in the TUI.
+		// It resolves against the same merged set (default dir + plugin skill
+		// roots) as the skill tool and the system-prompt list, re-read per use so
+		// newly installed skills work without a restart.
+		LoadSkills: cachedSkillsLoader(func() []skills.Skill {
+			merged, _ := plugins.MergedSkillsLoaded(deps.skillsDir(), pluginActivation.skillRoots)
+			return merged
+		}),
 		PermissionMode: permissionMode,
 		Notify:         resolved.Notify,
+		KeyBindings:    resolved.KeyBindings,
 		Setup: tui.SetupOptions{
 			Visible:    setupVisible,
 			Required:   needsSetup,
@@ -1158,7 +1209,8 @@ func profileHasCredential(profile config.ProviderProfile) bool {
 }
 
 // baseURLIsLoopback reports whether a provider base_url points at a loopback host
-// (a keyless local provider like Ollama/LM Studio), which needs no API key.
+// or a private-network host (192.168.x.y / 10.x.y.z / 172.16.x.y) — a local
+// provider like Ollama/LM Studio that needs no API key.
 func baseURLIsLoopback(baseURL string) bool {
 	u := strings.TrimSpace(baseURL)
 	if u == "" {
@@ -1173,7 +1225,7 @@ func baseURLIsLoopback(baseURL string) bool {
 		return true
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return addr.IsLoopback()
+		return addr.IsLoopback() || addr.IsPrivate()
 	}
 	return false
 }
@@ -1233,4 +1285,27 @@ Flags:
       --no-notify                   Disable notifications for this run
 `)
 	return err
+}
+
+// cachedSkillsLoader memoizes a skills loader for a short interval. The TUI
+// calls the loader from autocomplete on every "/x" keystroke; without a cache
+// each keystroke would re-read every SKILL.md body. Two seconds is fresh enough
+// that a newly installed skill still shows up "immediately" while typing.
+func cachedSkillsLoader(load func() []skills.Skill) func() []skills.Skill {
+	var (
+		mu     sync.Mutex
+		at     time.Time
+		cached []skills.Skill
+	)
+	const ttl = 2 * time.Second
+	return func() []skills.Skill {
+		mu.Lock()
+		defer mu.Unlock()
+		if cached != nil && time.Since(at) < ttl {
+			return cached
+		}
+		cached = load()
+		at = time.Now()
+		return cached
+	}
 }

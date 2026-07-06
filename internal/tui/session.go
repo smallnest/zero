@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/Gitlawb/zero/internal/sandbox"
 	"github.com/Gitlawb/zero/internal/sessions"
 	"github.com/Gitlawb/zero/internal/tools"
+	"github.com/Gitlawb/zero/internal/usage"
 )
 
 const tuiSessionTitleLimit = 80
@@ -39,6 +42,66 @@ func (m model) ensureActiveSession(prompt string) (model, error) {
 	return m, nil
 }
 
+// startNewSession abandons the visible conversation and the agent's in-context
+// history and begins a fresh session in place. The current session already lives
+// on disk (its events are persisted as they happen), so it stays resumable via
+// /resume; here we only clear the in-memory conversation and the per-session
+// usage/compaction counters, then let the next prompt lazily create a new session
+// through ensureActiveSession — the same seam a cold start uses. Model, provider,
+// permission mode, and response style are intentionally preserved: /new starts a
+// clean conversation, not a clean configuration.
+func (m model) startNewSession() model {
+	previousID := m.activeSession.SessionID
+
+	m.activeSession = sessions.Metadata{}
+	m.sessionEvents = nil
+
+	// Reset the per-session usage + compaction display so the new session starts
+	// from zero instead of inheriting the previous conversation's token/cost totals.
+	if m.usageTracker != nil {
+		m.usageTracker.Reset()
+	}
+	m.lastUsage = usage.Normalized{}
+	m.lastUsageSeen = false
+	m.unpricedRequests = 0
+	m.unpricedTokens = 0
+	m.compactRequests = 0
+	m.compactFrame = 0
+	m.lastCompactResult = nil
+	m.lastCompactError = ""
+	m.turnLatencySum = 0
+	m.turnLatencyCount = 0
+	m.turnTTFTSum = 0
+	m.turnTTFTCount = 0
+
+	// Staged input belongs to the previous conversation. Attachments and a queued
+	// message are only consumed at prompt-submit, so without clearing them here the
+	// fresh session's first prompt would silently inherit the old session's images,
+	// documents, or queued text.
+	m.pendingImages = nil
+	m.pendingImageLabels = nil
+	m.pendingDocuments = nil
+	m.queuedMessage = ""
+	// The remembered /retry attachment snapshot belongs to the previous session
+	// too — dropping it keeps a post-/new /retry from re-staging old images or
+	// documents. lastPrompt is composer history (like inputHistory) and stays.
+	m.lastImages = nil
+	m.lastImageLabels = nil
+	m.lastDocuments = nil
+
+	note := "Started a new session."
+	if previousID != "" {
+		note = "New session started. Previous session saved as " + previousID +
+			" — resume it anytime with /resume " + previousID + "."
+	}
+	m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionClear})
+	m.transcript = reduceTranscript(m.transcript, transcriptAction{kind: actionAppendSystem, text: note})
+	// Scrollback above can't be un-printed; a faint divider marks the boundary and
+	// the flush frontier restarts for the fresh transcript (mirrors /clear, /resume).
+	m.resetFlushFrontier("· new session ·")
+	return m
+}
+
 func (m model) appendSessionEvent(eventType sessions.EventType, payload any) (model, error) {
 	if m.activeSession.SessionID == "" {
 		return m, nil
@@ -60,13 +123,24 @@ func (m model) appendSessionEvent(eventType sessions.EventType, payload any) (mo
 
 func (m model) appendSessionEvents(events []pendingSessionEvent) (model, []transcriptRow) {
 	rows := []transcriptRow{}
+	if m.activeSession.SessionID == "" || len(events) == 0 {
+		return m, rows
+	}
+	inputs := make([]sessions.AppendEventInput, 0, len(events))
 	for _, event := range events {
-		next, err := m.appendSessionEvent(event.Type, event.Payload)
-		if err != nil {
-			rows = append(rows, transcriptRow{kind: rowError, text: "session record error: " + err.Error()})
-			continue
-		}
-		m = next
+		inputs = append(inputs, sessions.AppendEventInput{Type: event.Type, Payload: event.Payload})
+	}
+	appended, err := m.sessionStore.AppendEvents(m.activeSession.SessionID, inputs)
+	if err != nil {
+		rows = append(rows, transcriptRow{kind: rowError, text: "session record error: " + err.Error()})
+		return m, rows
+	}
+	if len(appended) > 0 {
+		last := appended[len(appended)-1]
+		m.activeSession.UpdatedAt = last.CreatedAt
+		m.activeSession.EventCount = last.Sequence
+		m.activeSession.LastEventType = last.Type
+		m.sessionEvents = append(m.sessionEvents, appended...)
 	}
 	return m, rows
 }
@@ -79,13 +153,12 @@ func (m model) appendSessionEventsTo(sessionID string, events []pendingSessionEv
 	if m.sessionStore == nil || sessionID == "" {
 		return rows
 	}
+	inputs := make([]sessions.AppendEventInput, 0, len(events))
 	for _, event := range events {
-		if _, err := m.sessionStore.AppendEvent(sessionID, sessions.AppendEventInput{
-			Type:    event.Type,
-			Payload: event.Payload,
-		}); err != nil {
-			rows = append(rows, transcriptRow{kind: rowError, text: "session record error: " + err.Error()})
-		}
+		inputs = append(inputs, sessions.AppendEventInput{Type: event.Type, Payload: event.Payload})
+	}
+	if _, err := m.sessionStore.AppendEvents(sessionID, inputs); err != nil {
+		rows = append(rows, transcriptRow{kind: rowError, text: "session record error: " + err.Error()})
 	}
 	return rows
 }
@@ -165,9 +238,11 @@ func (m model) sessionPrompt(prompt string) string {
 
 func (m model) resolveResumeSession(args string) (*sessions.Metadata, error) {
 	if strings.EqualFold(args, "latest") {
-		// Latest *resumable* conversation, so "latest" never lands on a child or
-		// spec sub-run. An explicit `/resume <id>` below still resolves any session.
-		latest, err := m.sessionStore.LatestResumable()
+		// Latest *resumable* conversation IN THIS WORKSPACE, so "latest" never lands
+		// on a child, a spec sub-run, or a session from another project (matching the
+		// workspace-scoped picker). An explicit `/resume <id>` below still resolves
+		// any session regardless of workspace.
+		latest, err := m.latestResumableInWorkspace()
 		if err != nil {
 			return nil, err
 		}
@@ -266,6 +341,18 @@ func (m model) newSessionPicker() *commandPicker {
 	now := m.now()
 	items := make([]pickerItem, 0, len(metas))
 	for _, meta := range metas {
+		// Workspace-scoped: hide sessions from other project directories so /resume
+		// lists this workspace's history, not every project's. Checked BEFORE the
+		// per-session event read below, so a large global history doesn't pay 50
+		// full file reads to build one workspace's list. Sessions with no recorded
+		// Cwd (older runs) stay visible rather than vanishing.
+		if !sessionMatchesWorkspace(meta.Cwd, m.cwd) {
+			continue
+		}
+		// A zero-event session has nothing to resume — skip it without a file read.
+		if meta.EventCount == 0 {
+			continue
+		}
 		// Skip empty/failed runs (no assistant output, no tool calls) — e.g. the
 		// same prompt retried while the model wasn't responding. They have nothing
 		// to resume and otherwise flood the list with identical rows. Still on disk.
@@ -301,6 +388,52 @@ func (m model) newSessionPicker() *commandPicker {
 // resuming: a tool call/result, or a non-user message with real content (not the
 // no-output guardrail stop). Empty/failed runs return false and are hidden from
 // the picker (they stay on disk). Errors fail open (the session is kept).
+// latestResumableInWorkspace returns the most-recently-updated resumable session
+// belonging to the current workspace, or nil when none exist. ListResumable is
+// ordered latest-first, so the first qualifying match is the latest. It applies
+// the SAME filters as newSessionPicker — workspace membership, non-empty
+// metadata, and real resumable content — so `/resume latest` never lands on a
+// zero-event or empty/failed run the picker would have hidden.
+func (m model) latestResumableInWorkspace() (*sessions.Metadata, error) {
+	metas, err := m.sessionStore.ListResumable()
+	if err != nil {
+		return nil, err
+	}
+	for i := range metas {
+		if !sessionMatchesWorkspace(metas[i].Cwd, m.cwd) {
+			continue
+		}
+		if metas[i].EventCount == 0 {
+			continue
+		}
+		if !m.sessionHasResumableContent(metas[i].SessionID) {
+			continue
+		}
+		return &metas[i], nil
+	}
+	return nil, nil
+}
+
+// sessionMatchesWorkspace reports whether a session recorded in sessionCwd
+// belongs to the current workspaceCwd. A session with no recorded Cwd (older
+// runs) or an unknown current workspace is kept visible rather than filtered out,
+// so the scoping never hides history it can't confidently place elsewhere. On
+// Windows the comparison is case-insensitive, since the filesystem is and the
+// same workspace can be spelled with different casing (C:\Proj vs c:\proj).
+func sessionMatchesWorkspace(sessionCwd, workspaceCwd string) bool {
+	sessionCwd = strings.TrimSpace(sessionCwd)
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if sessionCwd == "" || workspaceCwd == "" {
+		return true
+	}
+	a := filepath.Clean(sessionCwd)
+	b := filepath.Clean(workspaceCwd)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func (m model) sessionHasResumableContent(sessionID string) bool {
 	events, err := m.sessionStore.ReadEvents(sessionID)
 	if err != nil {

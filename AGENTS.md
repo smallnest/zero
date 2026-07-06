@@ -26,7 +26,7 @@ Accepted file names, in priority order at each level:
 | `./ZERO.md` | Brand-specific alias. Same format, lower priority. |
 | `./.zero/AGENTS.md` | Project-local, hidden, gitignored. Personal notes that stay out of git. |
 
-Matching is **case-insensitive** on the basename, so `AGENTS.md`, `Agents.md`, and `agents.md` resolve to the same file on Windows and macOS. The git-tracked filename in this repo is `AGENTS.MD` (uppercase `MD`) — keep that on case-sensitive filesystems (Linux, the WSL filesystem, or a CI runner) to match what the loader looks for.
+Matching is **case-insensitive** on the basename, so `AGENTS.md`, `Agents.md`, and `agents.md` resolve to the same file on Windows and macOS. The git-tracked filename in this repo is `AGENTS.md` — keep that on case-sensitive filesystems (Linux, the WSL filesystem, or a CI runner) to match what the loader looks for.
 
 Both files use the same format. YAML frontmatter is optional; the markdown body is loaded as instructions for the agent. Zero reads the file once at session start, so changes take effect on the next `zero` launch — not mid-session.
 
@@ -46,6 +46,12 @@ Tips:
 - Don't put secrets, model IDs, or environment-specific paths in `AGENTS.md`. Use `config.json` for those.
 - In a monorepo, drop a narrower `AGENTS.md` in each sub-tree (e.g. `services/api/AGENTS.md`). Zero picks those up automatically when you launch from inside the sub-tree.
 - A YAML frontmatter block (`---\n...\n---`) at the top is preserved verbatim in the injected prompt but is not parsed for `globs:` or `alwaysApply:` scoping today — keep the body self-contained.
+
+### Personal guidelines, across every project
+
+For preferences that follow *you*, not a specific repo (tone, tooling habits, workflow), drop a `ZERO.md` in your user config directory: `~/.config/zero/ZERO.md` on Linux/macOS, `%AppData%\Roaming\zero\ZERO.md` on Windows — the same directory as `config.json` and your personal specialists. Same format and 8 KiB cap as the project files above, and the same case-insensitive basename match.
+
+This file is injected as its own `## User guidelines` section, before the project's `AGENTS.md`/`ZERO.md`, and is labeled as personal preference in the prompt: project guidelines are the later, more specific instruction and take precedence over it when the two conflict.
 
 ## 2. Custom specialists
 
@@ -307,6 +313,7 @@ A team that wants every contributor's Zero to behave the same way commits:
 Each contributor adds only:
 
 - `~/.config/zero/config.json` — their personal API keys, theme, default mode.
+- `~/.config/zero/ZERO.md` — personal preferences that follow them across every project (see section 1).
 - `~/.local/share/zero/skills/` — personal skills they keep across projects.
 
 That's it. Run `zero` from the repo root and the agent has the team's full instruction set, every contributor's personal setup, and nothing else.

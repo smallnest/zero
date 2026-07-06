@@ -21,12 +21,17 @@ import (
 // the agent loop owns the provider wiring.
 
 // defaultCompactionPreserveLast is how many trailing messages are kept verbatim
-// when the caller does not specify a preserve count.
-const defaultCompactionPreserveLast = 8
+// when the caller does not specify a preserve count. Kept in sync with the replay
+// reconstruction default in internal/sessions/replay.go.
+const defaultCompactionPreserveLast = 6
 
 // compactionTriggerRatio is the fraction of the context window at which
-// proactive compaction kicks in (top of each turn).
-const compactionTriggerRatio = 0.8
+// proactive compaction kicks in (top of each turn). NOTE: this is speculative
+// tuning — validate against the per-turn latency/compaction metrics (roadmap 5.2)
+// before trusting it. Measured fixed overhead is ~7.4k tokens (not the ~16k the
+// roadmap assumed), so context fills slower; if data shows 0.7 triggers redundant
+// summarization, raise it back toward 0.8.
+const compactionTriggerRatio = 0.7
 
 // summaryLabel prefixes the injected summary so it is unmistakable in the
 // transcript (and so tests can assert on it).
@@ -320,6 +325,43 @@ type compactionState struct {
 	// OnText is deliberately NOT forwarded (compaction stays invisible to the user),
 	// but its token COST must still be counted so usage reports and budgets include it.
 	onUsage func(Usage)
+
+	// calibrationRatio scales the raw byte/4 token estimate toward the provider's
+	// real prompt-token count. ApproxTextTokens over-counts code-heavy content by
+	// ~15-20%, which would trip compaction early (at ~60% of true capacity). It
+	// starts at 1.0 and converges via an EMA as each turn reports actual usage, so
+	// later turns compact nearer to real capacity. Zero is treated as 1.0.
+	calibrationRatio float64
+}
+
+// calibrate folds one turn's (rawEstimate, actualPromptTokens) sample into the
+// running calibration ratio. A single sample is clamped to a sane band so an
+// outlier (a huge cache-read turn, a provider-overhead spike) can't skew the
+// estimate enough to disable or thrash compaction.
+func (state *compactionState) calibrate(rawEstimate int, actualPromptTokens int) {
+	if !state.enabled || rawEstimate <= 0 || actualPromptTokens <= 0 {
+		return
+	}
+	sample := float64(actualPromptTokens) / float64(rawEstimate)
+	if sample < 0.5 {
+		sample = 0.5
+	} else if sample > 2.0 {
+		sample = 2.0
+	}
+	if state.calibrationRatio <= 0 {
+		state.calibrationRatio = 1.0
+	}
+	const alpha = 0.3 // weight on the newest sample; smooths jitter across turns
+	state.calibrationRatio = state.calibrationRatio*(1-alpha) + sample*alpha
+}
+
+// calibratedTokens applies the learned ratio to a raw estimate. Before any sample
+// arrives (ratio unset) it returns the raw estimate unchanged.
+func (state *compactionState) calibratedTokens(raw int) int {
+	if state.calibrationRatio <= 0 {
+		return raw
+	}
+	return int(float64(raw) * state.calibrationRatio)
 }
 
 func newCompactionState(options Options) *compactionState {
@@ -348,7 +390,7 @@ func (state *compactionState) maybeCompact(
 	// the messages; both the threshold check and the shrink check below use the
 	// same term so they stay consistent.
 	toolTokens := estimateToolDefTokens(tools)
-	size := estimateTokens(messages) + toolTokens
+	size := state.calibratedTokens(estimateTokens(messages) + toolTokens)
 	if size <= state.threshold {
 		return messages
 	}
@@ -365,7 +407,7 @@ func (state *compactionState) maybeCompact(
 	// entirely and preserve recent turns verbatim.
 	if pruned, reclaimed := pruneStaleToolOutput(messages, state.preserveLast); reclaimed > 0 {
 		messages = pruned
-		size = estimateTokens(messages) + toolTokens
+		size = state.calibratedTokens(estimateTokens(messages) + toolTokens)
 		if size <= state.threshold {
 			state.lowWaterMark = size
 			return messages
@@ -381,7 +423,7 @@ func (state *compactionState) maybeCompact(
 		// later turn) can try again; we never drop messages on failure here.
 		return messages
 	}
-	newSize := estimateTokens(compacted) + toolTokens
+	newSize := state.calibratedTokens(estimateTokens(compacted) + toolTokens)
 	if newSize >= size {
 		// Compaction did not actually shrink anything (e.g. nothing to
 		// summarize). Leave the history untouched and don't churn next turn.
@@ -439,7 +481,7 @@ func (state *compactionState) recover(
 	// the SAME combined (messages + tool-defs) domain maybeCompact uses, so the
 	// proactive shrink-guard compares like with like.
 	state.reactiveAttempted = true
-	state.lowWaterMark = estimateTokens(result) + estimateToolDefTokens(tools)
+	state.lowWaterMark = state.calibratedTokens(estimateTokens(result) + estimateToolDefTokens(tools))
 	return result, true, nil
 }
 

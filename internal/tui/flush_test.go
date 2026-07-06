@@ -105,11 +105,14 @@ func TestClearResetsFlushFrontier(t *testing.T) {
 	m.input.SetValue("/clear")
 	updated, _ := m.Update(testKey(tea.KeyEnter))
 	next := updated.(model)
-	if len(next.transcript) != 1 || next.transcript[0].kind != rowWelcome {
-		t.Fatalf("expected /clear to reset transcript, got %#v", next.transcript)
+	if len(next.transcript) != 2 || next.transcript[0].kind != rowWelcome {
+		t.Fatalf("expected /clear to reset transcript to welcome + note, got %#v", next.transcript)
 	}
-	if next.flushed > 1 {
-		t.Fatalf("expected frontier reset after /clear, got %d", next.flushed)
+	if !transcriptContains(next.transcript, "/new") {
+		t.Fatalf("expected /clear to point users to /new, got %#v", next.transcript)
+	}
+	if next.flushed != len(next.transcript) {
+		t.Fatalf("expected frontier reset to match cleared transcript (%d rows), got %d", len(next.transcript), next.flushed)
 	}
 }
 
@@ -118,7 +121,7 @@ func TestEscCancellationLeavesVisibleMarker(t *testing.T) {
 	m.pending = true
 	m.activeRunID = 5
 	m.runCancel = func() {}
-	m.streamingText = "half an answer"
+	m.streamingText = []byte("half an answer")
 
 	updated, _ := m.Update(testKey(tea.KeyEsc))
 	next := updated.(model)
@@ -130,7 +133,7 @@ func TestEscCancellationLeavesVisibleMarker(t *testing.T) {
 	if !transcriptContains(next.transcript, "half an answer") {
 		t.Fatalf("expected the partial streamed answer to be preserved, got %#v", next.transcript)
 	}
-	if next.streamingText != "" {
+	if len(next.streamingText) != 0 {
 		t.Fatal("streaming text should be cleared after cancel")
 	}
 }

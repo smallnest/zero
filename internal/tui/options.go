@@ -13,6 +13,7 @@ import (
 	"github.com/Gitlawb/zero/internal/providermodeldiscovery"
 	"github.com/Gitlawb/zero/internal/sandbox"
 	"github.com/Gitlawb/zero/internal/sessions"
+	"github.com/Gitlawb/zero/internal/skills"
 	"github.com/Gitlawb/zero/internal/tools"
 	"github.com/Gitlawb/zero/internal/usage"
 	"github.com/Gitlawb/zero/internal/zeroruntime"
@@ -48,7 +49,13 @@ type Options struct {
 	SessionCompactor            SessionCompactor
 	PrService                   *PrService
 
-	AgentOptions    agent.Options
+	AgentOptions agent.Options
+	// LoadSkills returns the installed skills (default skills dir merged with any
+	// plugin skill roots), bodies included, for /skills and direct /<skill-name>
+	// invocation. Called lazily per use so newly installed skills are picked up
+	// without a restart. Nil means the session has no skills wiring (skills stay
+	// model-pulled via the skill tool only).
+	LoadSkills      func() []skills.Skill
 	PermissionMode  agent.PermissionMode
 	ReasoningEffort modelregistry.ReasoningEffort
 	ResponseStyle   string
@@ -63,6 +70,10 @@ type Options struct {
 
 	// Notify configures completion / awaiting-input notifications.
 	Notify config.NotifyConfig
+
+	// KeyBindings configures remappable TUI keybindings. An empty/zero
+	// KeyBindingsConfig means "use built-in defaults" for each action.
+	KeyBindings config.KeyBindingsConfig
 
 	// AltScreen tells the model it is running inside Bubble Tea's alternate
 	// screen. Run sets this for the interactive app; tests can leave it false

@@ -87,11 +87,13 @@ func TestHelpOverlayViewRendersGroupsAndKeys(t *testing.T) {
 	}
 }
 
-func TestKeybindingGroupsAreWellFormed(t *testing.T) {
-	if len(keybindingGroups) == 0 {
-		t.Fatal("keybindingGroups must not be empty")
+func TestBuildKeybindingGroupsAreWellFormed(t *testing.T) {
+	m := newModel(context.Background(), Options{ModelName: "gpt-4o"})
+	groups := m.buildKeybindingGroups()
+	if len(groups) == 0 {
+		t.Fatal("buildKeybindingGroups must not return empty")
 	}
-	for _, group := range keybindingGroups {
+	for _, group := range groups {
 		if strings.TrimSpace(group.title) == "" {
 			t.Fatal("every keybinding group needs a title")
 		}
